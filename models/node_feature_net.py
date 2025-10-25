@@ -18,9 +18,7 @@ class NodeFeatureNet(nn.Module):
 
     def embed_t(self, timesteps, mask):
         timestep_emb = get_time_embedding(
-            timesteps[:, 0],
-            self.c_timestep_emb,
-            max_positions=2056
+            timesteps[:, 0], self.c_timestep_emb, max_positions=2056
         )[:, None, :].repeat(1, mask.shape[1], 1)
         return timestep_emb * mask.unsqueeze(-1)
 
