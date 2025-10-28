@@ -75,7 +75,7 @@ experiment:
   warm_start_cfg_override: True
   training:
     translation_loss_weight: 0.2
-    rotation_loss_weights: 1.0
+    rotation_loss_wcleareight: 1.0
     semigroup_loss_weight: 2.0
     flow_matching_loss_weight: 1.0
   wandb:
