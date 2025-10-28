@@ -1,7 +1,7 @@
 defaults:
-  - _self_
   - datasets
   - model
+  - _self_
 
 data:
 
@@ -9,7 +9,7 @@ data:
   task: hallucination
 
   # Available tasks: pdb, scope
-  dataset: pdb
+  dataset: scope
 
   loader:
     num_workers: 4
@@ -20,7 +20,23 @@ data:
     max_batch_size: 80
     max_num_res_squared: 100_000
 
+# For debug
+scope_dataset:
+  filter:
+    max_num_res: 70
+
 interpolant:
+
+  time_sampler:
+    type: uniform
+    min_t: 1e-2
+
+    # type: lognorm
+    # mu: -0.4
+    # sigma: 1.0
+
+    three_sample: ordered
+
   min_t: 1e-2
 
   twisting:
@@ -48,39 +64,33 @@ interpolant:
     num_timesteps: 100
     do_sde: False
 
-  self_condition: ${model.edge_features.self_condition}
+  self_condition: false
+  use_inference_schedule: false
 
 experiment:
   debug: False
   seed: 123
-  num_devices: 2
+  num_devices: 1
   warm_start: null
   warm_start_cfg_override: True
   training:
-    mask_plddt: True
-    bb_atom_scale: 0.1
-    trans_scale: 0.1
     translation_loss_weight: 2.0
-    t_normalize_clip: 0.9
     rotation_loss_weights: 1.0
-    aux_loss_weight: 0.0
-    aux_loss_use_bb_loss: True
-    aux_loss_use_pair_loss: True
-    aux_loss_t_pass: 0.5
+    semigroup_loss_weight: 1.0
   wandb:
-    name: ${data.task}_${data.dataset}
+    name: semiMF_${data.task}_${data.dataset}_debug
     project: se3-fm
   optimizer:
     lr: 0.0001
   trainer:
-    overfit_batches: 0
+    overfit_batches: 10
     min_epochs: 1 # prevents early stopping
     max_epochs: 1000
     accelerator: gpu
     log_every_n_steps: 1
-    deterministic: False
+    deterministic: True
     strategy: ddp
-    check_val_every_n_epoch: 4
+    check_val_every_n_epoch: 20
     accumulate_grad_batches: 2
   checkpointer:
     dirpath: ckpt/${experiment.wandb.project}/${experiment.wandb.name}/${now:%Y-%m-%d}_${now:%H-%M-%S}

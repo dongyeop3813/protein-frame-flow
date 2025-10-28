@@ -531,6 +531,86 @@ def geodesic_t(
     return torch.einsum("...ij,...jk->...ik", base_mat, mat_t)
 
 
+def exp(base_mat: torch.Tensor, rot_vf: torch.Tensor) -> torch.Tensor:
+    return geodesic_t(1.0, mat=None, base_mat=base_mat, rot_vf=rot_vf)
+
+
+def is_skew_symmetric(mat: torch.Tensor) -> bool:
+    """
+    Check if a matrix is skew symmetric.
+
+    Args:
+        mat (torch.Tensor): Matrix to check.
+
+    Returns:
+        bool: True if the matrix is skew symmetric, False otherwise.
+    """
+    return torch.allclose(mat, -mat.transpose(-1, -2))
+
+
+def rotvec_to_tangent(base_mat: torch.Tensor, rotvec: torch.Tensor) -> torch.Tensor:
+    """
+    Convert a rotation vector to a tangent vector at a base point.
+    so(3) -> T_R SO(3) (tangent space at R)
+    """
+    omega = vector_to_skew_matrix(rotvec)
+    return rot_mult(base_mat, omega)
+
+
+def d1_log(
+    base_mat: torch.Tensor, target_mat: torch.Tensor, v: torch.Tensor
+) -> torch.Tensor:
+    """
+    Compute the differential of the logarithm map with respect to its first argument.
+
+    Specifically, computes d/dt|_{t=0} Log_{exp_p(tv)}(q) where exp_p is the exponential
+    map at p and Log_p(q) = log(p^T * q).
+
+    Args:
+        base_mat: Base point p on SO(3) manifold (rotation matrix).
+        target_mat: Target point q on SO(3) manifold (rotation matrix).
+        v: Tangent vector at base_mat (rotation vector in R^3).
+
+    Returns:
+        Differential of log map in direction v (rotation vector in R^3).
+    """
+
+    def log1(base_mat):
+        return calc_rot_vf(base_mat, target_mat)
+
+    tangent = rotvec_to_tangent(base_mat, v)
+    return torch.func.jvp(log1, (base_mat,), (tangent,))[1]
+
+
+def d1_log_v2(
+    base_mat: torch.Tensor, target_mat: torch.Tensor, v: torch.Tensor
+) -> torch.Tensor:
+    """
+    Compute the differential of the logarithm map with respect to its first argument.
+    This is the second version.
+
+    Specifically, computes d/dt|_{t=0} Log_{exp_p(tv)}(q) where exp_p is the exponential
+    map at p and Log_p(q) = log(p^T * q).
+
+    Args:
+        base_mat: Base point p on SO(3) manifold (rotation matrix).
+        target_mat: Target point q on SO(3) manifold (rotation matrix).
+        v: Tangent vector at base_mat (rotation vector in R^3).
+
+    Returns:
+        Differential of log map in direction v (rotation vector in R^3).
+    """
+
+    def log1(base_mat):
+        return rot_mult(base_mat, local_log(base_mat, target_mat))
+
+    tangent = rotvec_to_tangent(base_mat, v)
+    ret = torch.func.jvp(log1, (base_mat,), (tangent,))[1]
+    # ret is a tangent vector at base_mat
+    skew_mat = rot_mult(rot_transpose(base_mat), ret)
+    return skew_matrix_to_vector(skew_mat)
+
+
 class SO3LookupCache:
     def __init__(
         self,

@@ -9,7 +9,7 @@ data:
   task: hallucination
 
   # Available tasks: pdb, scope
-  dataset: pdb
+  dataset: toy
 
   loader:
     num_workers: 4
@@ -21,6 +21,16 @@ data:
     max_num_res_squared: 100_000
 
 interpolant:
+
+  time_sampler:
+    type: lognorm
+    mu: -0.4
+    sigma: 1.0
+    min_t: 1e-2
+
+    interval_sample: ordered
+    boundary_ratio: 0.75
+
   min_t: 1e-2
 
   twisting:
@@ -61,6 +71,8 @@ experiment:
     bb_atom_scale: 0.1
     trans_scale: 0.1
     translation_loss_weight: 2.0
+    trans_loss_p: 0.5
+    rot_loss_p: 0.5
     t_normalize_clip: 0.9
     rotation_loss_weights: 1.0
     aux_loss_weight: 0.0
@@ -68,7 +80,7 @@ experiment:
     aux_loss_use_pair_loss: True
     aux_loss_t_pass: 0.5
   wandb:
-    name: ${data.task}_${data.dataset}
+    name: meanflow_${data.task}_${data.dataset}
     project: se3-fm
   optimizer:
     lr: 0.0001
