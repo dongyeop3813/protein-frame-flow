@@ -74,9 +74,10 @@ experiment:
   warm_start: null
   warm_start_cfg_override: True
   training:
-    translation_loss_weight: 2.0
+    translation_loss_weight: 0.2
     rotation_loss_weights: 1.0
-    semigroup_loss_weight: 1.0
+    semigroup_loss_weight: 2.0
+    flow_matching_loss_weight: 1.0
   wandb:
     name: semiMF_${data.task}_${data.dataset}_debug
     project: se3-fm
@@ -91,7 +92,7 @@ experiment:
     deterministic: True
     strategy: ddp
     check_val_every_n_epoch: 20
-    accumulate_grad_batches: 2
+    accumulate_grad_batches: 1
   checkpointer:
     dirpath: ckpt/${experiment.wandb.project}/${experiment.wandb.name}/${now:%Y-%m-%d}_${now:%H-%M-%S}
     save_last: True

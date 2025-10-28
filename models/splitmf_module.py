@@ -9,6 +9,7 @@ import pandas as pd
 import logging
 import torch.distributed as dist
 from pytorch_lightning import LightningModule
+from pytorch_lightning.utilities import grad_norm
 from analysis import metrics
 from analysis import utils as au
 from models.meanflow_model import MeanFlowModel
@@ -98,6 +99,8 @@ class SplitMeanFlowModule(LightningModule):
     def flow_matching_loss(self, trans_t, rot_t, trans_1, rot_1, t, loss_mask, feats):
         # Conditional velocity fields
         # Here, v_rot is a rotation vector.
+        loss_denom = torch.sum(loss_mask, dim=-1) * 3
+
         one_minus_t = torch.clamp(1 - t, min=1e-4)[..., None]
         v_trans = (trans_1 - trans_t) / one_minus_t
         v_rot = so3_utils.calc_rot_vf(rot_t, rot_1) / one_minus_t
@@ -117,9 +120,15 @@ class SplitMeanFlowModule(LightningModule):
             ((u_rot_t - v_rot) * loss_mask[..., None]) ** 2, dim=(-1, -2)
         )
 
+        # Normalize by the number of residues.
+        trans_loss /= loss_denom
+        rot_loss /= loss_denom
+
         return trans_loss, rot_loss
 
     def semigroup_loss(self, trans_t, rot_t, trans_r, rot_r, t, r, loss_mask, feats):
+        loss_denom = torch.sum(loss_mask, dim=-1) * 3
+
         r_minus_t = torch.clamp(r - t, min=1e-4)[..., None]
         u_trans_tgt = (trans_r - trans_t) / r_minus_t
         u_rot_tgt = so3_utils.calc_rot_vf(rot_t, rot_r) / r_minus_t
@@ -136,6 +145,10 @@ class SplitMeanFlowModule(LightningModule):
             ((u_rot - u_rot_tgt) * loss_mask[..., None]) ** 2, dim=(-1, -2)
         )
 
+        # Normalize by the number of residues.
+        trans_loss /= loss_denom
+        rot_loss /= loss_denom
+
         return trans_loss, rot_loss
 
     def model_step(self, noisy_batch: Any):
@@ -143,7 +156,6 @@ class SplitMeanFlowModule(LightningModule):
         loss_mask = noisy_batch["res_mask"] * noisy_batch["diffuse_mask"]
         if torch.any(torch.sum(loss_mask, dim=-1) < 1):
             raise ValueError("Empty batch encountered")
-        loss_denom = torch.sum(loss_mask, dim=-1) * 3
 
         # Extract values from noisy batch.
         trans_1 = noisy_batch["trans_1"]
@@ -161,9 +173,9 @@ class SplitMeanFlowModule(LightningModule):
         feat = noisy_batch
 
         trans_loss, rot_loss = self.flow_matching_loss(*xt, *x1, t, loss_mask, feat)
-        trans_loss *= training_cfg.translation_loss_weight / loss_denom
-        rot_loss *= training_cfg.rotation_loss_weights / loss_denom
-        fm_loss = trans_loss + rot_loss
+        weighted_trans_loss = trans_loss * training_cfg.translation_loss_weight
+        weighted_rot_loss = rot_loss * training_cfg.rotation_loss_weights
+        fm_loss = weighted_trans_loss + weighted_rot_loss
         if torch.any(torch.isnan(fm_loss)):
             raise ValueError("NaN loss encountered")
 
@@ -175,18 +187,26 @@ class SplitMeanFlowModule(LightningModule):
         sg_trans_loss, sg_rot_loss = self.semigroup_loss(
             *xt, *hat_xr, t, r, loss_mask, feat
         )
-        sg_trans_loss *= training_cfg.translation_loss_weight / loss_denom
-        sg_rot_loss *= training_cfg.rotation_loss_weights / loss_denom
-        semigroup_loss = sg_trans_loss + sg_rot_loss
+        weighted_sg_trans_loss = sg_trans_loss * training_cfg.translation_loss_weight
+        weighted_sg_rot_loss = sg_rot_loss * training_cfg.rotation_loss_weights
+        semigroup_loss = weighted_sg_trans_loss + weighted_sg_rot_loss
         if torch.any(torch.isnan(semigroup_loss)):
             raise ValueError("NaN loss encountered")
 
-        loss = fm_loss + training_cfg.semigroup_loss_weight * semigroup_loss
+        loss = (
+            training_cfg.flow_matching_loss_weight * fm_loss
+            + training_cfg.semigroup_loss_weight * semigroup_loss
+        )
         return {
             "fm_trans_loss": trans_loss,
             "fm_rot_loss": rot_loss,
+            "weighted_fm_trans_loss": weighted_trans_loss,
+            "weighted_fm_rot_loss": weighted_rot_loss,
             "sg_trans_loss": sg_trans_loss,
             "sg_rot_loss": sg_rot_loss,
+            "weighted_sg_trans_loss": weighted_sg_trans_loss,
+            "weighted_sg_rot_loss": weighted_sg_rot_loss,
+            "semigroup_loss": semigroup_loss,
             "split_meanflow_loss": loss,
         }
 
@@ -351,11 +371,7 @@ class SplitMeanFlowModule(LightningModule):
 
         # Losses to track. Stratified across t.
         for loss_name, batch_loss in batch_losses.items():
-            # Choose the appropriate timestep to bin by.
-            if loss_name == "fm_rot_loss":
-                batch_t = torch.squeeze(noisy_batch["so3_t"])
-            else:
-                batch_t = torch.squeeze(noisy_batch["r3_t"])
+            batch_t = noisy_batch["so3_t"]
 
             # Bin the loss by timestep.
             stratified_losses = mu.t_stratified_loss(
@@ -364,7 +380,12 @@ class SplitMeanFlowModule(LightningModule):
 
             # Log the stratified losses.
             for k, v in stratified_losses.items():
-                self._log_scalar(f"train/{k}", v, prog_bar=False, batch_size=num_batch)
+                self._log_scalar(
+                    f"train/stratified_loss/{k}",
+                    v,
+                    prog_bar=False,
+                    batch_size=num_batch,
+                )
 
         # Training throughput
         self._log_scalar(
@@ -386,6 +407,21 @@ class SplitMeanFlowModule(LightningModule):
         return torch.optim.AdamW(
             params=self.model.parameters(), **self._exp_cfg.optimizer
         )
+
+    def on_before_optimizer_step(self, optimizer):
+        # Compute grad norms and rename keys for cleaner logging
+        raw_norms = grad_norm(self.model, norm_type=2, group_separator="/")
+        if not raw_norms:
+            return
+        cleaned_norms = {}
+        for key, value in raw_norms.items():
+            if key.endswith("_total"):
+                cleaned_norms["grad_norm/total"] = value
+            else:
+                # Original key example: "grad_2.0_norm/<param_path>"
+                suffix = key.split("/", 1)[1] if "/" in key else key
+                cleaned_norms[f"grad_norm/layers/{suffix}"] = value
+        self.log_dict(cleaned_norms)
 
     def predict_step(self, batch, batch_idx):
         del batch_idx  # Unused
