@@ -44,7 +44,7 @@ interpolant:
 
   rots:
     corrupt: True
-    sample_schedule: exp
+    sample_schedule: linear
     exp_rate: 10
 
   trans:

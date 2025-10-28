@@ -213,7 +213,7 @@ def dataset_creation(dataset_class, cfg, task):
 
 
 def get_available_device(num_device):
-    return GPUtil.getAvailable(order="memory", limit=8, excludeID=[0, 1, 2])[
+    return GPUtil.getAvailable(order="memory", limit=8, excludeID=[0, 1, 2, 3])[
         :num_device
     ]
 
