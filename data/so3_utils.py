@@ -164,7 +164,9 @@ def rotvec_to_rotmat(rotation_vectors: torch.Tensor, tol: float = 1e-7) -> torch
     return rotation_matrices
 
 
-def rotmat_to_rotvec(rotation_matrices: torch.Tensor) -> torch.Tensor:
+def rotmat_to_rotvec(
+    rotation_matrices: torch.Tensor, eps: float = 1e-6
+) -> torch.Tensor:
     """
     Convert a batch of rotation matrices to rotation vectors (logarithmic map from SO(3) to so(3)).
     The standard logarithmic map can be derived from Rodrigues' formula via Taylor approximation
@@ -239,7 +241,10 @@ def rotmat_to_rotvec(rotation_matrices: torch.Tensor) -> torch.Tensor:
     skew_outer = skew_outer + (torch.relu(skew_outer) - skew_outer) * id3
 
     # Get basic rotation vector as sqrt of diagonal (is unit vector).
-    vector_pi = torch.sqrt(torch.diagonal(skew_outer, dim1=-2, dim2=-1))
+    vector_pi = torch.sqrt(torch.diagonal(skew_outer, dim1=-2, dim2=-1) + eps)
+
+    # Re-normalize the vector to unit length.
+    vector_pi = vector_pi / torch.norm(vector_pi, dim=-1, keepdim=True)
 
     # Compute the signs of vector elements (up to a global phase).
     # Fist select indices for outer product slices with the largest norm.
