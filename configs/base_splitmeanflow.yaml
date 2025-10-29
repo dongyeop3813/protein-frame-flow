@@ -93,6 +93,7 @@ experiment:
     strategy: ddp
     check_val_every_n_epoch: 20
     accumulate_grad_batches: 1
+    gradient_clip_val: 1000.0
   checkpointer:
     dirpath: ckpt/${experiment.wandb.project}/${experiment.wandb.name}/${now:%Y-%m-%d}_${now:%H-%M-%S}
     save_last: True
