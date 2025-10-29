@@ -159,10 +159,13 @@ class SplitMeanFlowModule(LightningModule):
 
         # Extract values from noisy batch.
         trans_1 = noisy_batch["trans_1"]
+        trans_s = noisy_batch["trans_s"]
         trans_t = noisy_batch["trans_t"]
         rot_1 = noisy_batch["rotmats_1"]
+        rot_s = noisy_batch["rotmats_s"]
         rot_t = noisy_batch["rotmats_t"]
         xt = (trans_t, rot_t)
+        xs = (trans_s, rot_s)
         x1 = (trans_1, rot_1)
 
         assert (noisy_batch["r3_t"] == noisy_batch["so3_t"]).all()
@@ -172,7 +175,11 @@ class SplitMeanFlowModule(LightningModule):
 
         feat = noisy_batch
 
-        trans_loss, rot_loss = self.flow_matching_loss(*xt, *x1, t, loss_mask, feat)
+        if training_cfg.flow_matching_loss_use_s:
+            trans_loss, rot_loss = self.flow_matching_loss(*xs, *x1, s, loss_mask, feat)
+        else:
+            trans_loss, rot_loss = self.flow_matching_loss(*xt, *x1, t, loss_mask, feat)
+
         weighted_trans_loss = trans_loss * training_cfg.translation_loss_weight
         weighted_rot_loss = rot_loss * training_cfg.rotation_loss_weight
         fm_loss = weighted_trans_loss + weighted_rot_loss

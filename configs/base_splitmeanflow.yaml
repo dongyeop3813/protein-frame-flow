@@ -74,6 +74,7 @@ experiment:
   warm_start: null
   warm_start_cfg_override: True
   training:
+    flow_matching_loss_use_s: True
     translation_loss_weight: 0.2
     rotation_loss_weight: 1.0
     semigroup_loss_weight: 2.0
