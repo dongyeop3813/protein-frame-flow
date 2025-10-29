@@ -95,7 +95,7 @@ class Experiment:
 
 
 @hydra.main(
-    version_base=None, config_path="../configs", config_name="base_meanflow_debug.yaml"
+    version_base=None, config_path="../configs", config_name="base_meanflow.yaml"
 )
 def main(cfg: DictConfig):
     torch.autograd.set_detect_anomaly(mode=True)

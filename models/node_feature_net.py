@@ -54,13 +54,19 @@ class MeanFlowNodeFeatureNet(nn.Module):
         self.c_s = self._cfg.c_s
         self.c_pos_emb = self._cfg.c_pos_emb
         self.c_timestep_emb = self._cfg.c_timestep_emb
+        self.time_embedding = (
+            get_positional_time_embedding
+            if self._cfg.time_embedding_type == "positional"
+            else get_time_embedding
+        )
+
         embed_size = self._cfg.c_pos_emb + self._cfg.c_timestep_emb * 3 + 1
         if self._cfg.embed_chain:
             embed_size += self._cfg.c_pos_emb
         self.linear = nn.Linear(embed_size, self.c_s)
 
     def embed_t(self, timesteps, mask):
-        timestep_emb = get_positional_time_embedding(
+        timestep_emb = self.time_embedding(
             timesteps[:, 0], self.c_timestep_emb, max_positions=2056
         )[:, None, :].repeat(1, mask.shape[1], 1)
         return timestep_emb * mask.unsqueeze(-1)
@@ -81,6 +87,6 @@ class MeanFlowNodeFeatureNet(nn.Module):
             diffuse_mask[..., None],
             self.embed_t(so3_t, res_mask),
             self.embed_t(r3_t, res_mask),
-            self.embed_t(r, res_mask),
+            self.embed_t(r - so3_t, res_mask),
         ]
         return self.linear(torch.cat(input_feats, dim=-1))

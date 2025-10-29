@@ -143,7 +143,7 @@ class MeanFlowModule(LightningModule):
         trans_error = torch.sum(
             ((u_trans - u_trans_tgt) * loss_mask[..., None]) ** 2, dim=(-1, -2)
         )
-        trans_loss = trans_error * training_cfg.translation_loss_weight / loss_denom
+        trans_loss = trans_error / loss_denom
 
         # MeanFlow on rotation.
         # u_rot and d_rot_u are se(3) rotation vectors.
@@ -158,14 +158,20 @@ class MeanFlowModule(LightningModule):
         rot_error = torch.sum(
             ((u_rot - u_rot_tgt) * loss_mask[..., None]) ** 2, dim=(-1, -2)
         )
-        rot_loss = rot_error * training_cfg.rotation_loss_weights / loss_denom
+        rot_loss = rot_error / loss_denom
 
-        meanflow_loss = trans_loss + rot_loss
+        # Loss weighting.
+        weighted_trans_loss = trans_loss * training_cfg.translation_loss_weight
+        weighted_rot_loss = rot_loss * training_cfg.rotation_loss_weight
+        meanflow_loss = weighted_trans_loss + weighted_rot_loss
         if torch.any(torch.isnan(meanflow_loss)):
             raise ValueError("NaN loss encountered")
+
         return {
             "trans_loss": trans_loss,
             "rot_loss": rot_loss,
+            "weighted_trans_loss": weighted_trans_loss,
+            "weighted_rot_loss": weighted_rot_loss,
             "meanflow_loss": weighted_loss(meanflow_loss, training_cfg.loss_p),
         }
 

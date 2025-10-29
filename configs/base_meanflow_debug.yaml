@@ -40,7 +40,7 @@ interpolant:
 
   rots:
     corrupt: True
-    sample_schedule: exp
+    sample_schedule: linear
     exp_rate: 10
 
   trans:
@@ -70,18 +70,18 @@ experiment:
   warm_start: null
   warm_start_cfg_override: True
   training:
-    translation_loss_weight: 2.0
-    rotation_loss_weights: 1.0
+    translation_loss_weight: 0.2
+    rotation_loss_weight: 1.0
     loss_p: 0.5
   wandb:
     name: meanflow_${data.task}_${data.dataset}_debug
-    project: se3-fm
+    project: se3-MeanFlow-debug
   optimizer:
     lr: 0.0001
   trainer:
     overfit_batches: 10
     min_epochs: 1 # prevents early stopping
-    max_epochs: 1000
+    max_epochs: 2000
     accelerator: gpu
     log_every_n_steps: 1
     deterministic: True

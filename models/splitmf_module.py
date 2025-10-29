@@ -362,6 +362,40 @@ class SplitMeanFlowModule(LightningModule):
         noisy_batch = self.interpolant.corrupt_batch(batch)
 
         # No self-conditioning, no auxiliary losses.
+        # Log the batch and model state for debugging if NaN ValueError is encountered.
+        try:
+            batch_losses = self.model_step(noisy_batch)
+        except Exception as e:
+            if isinstance(e, ValueError) and ("NaN" in str(e) or "nan" in str(e)):
+                debug_dir = os.path.join(self.checkpoint_dir, "debug")
+                os.makedirs(debug_dir, exist_ok=True)
+                prefix = f"step_{int(self.global_step)}"
+
+                # Try Lightning checkpoint (includes optimizer/scheduler states)
+                ckpt_path = os.path.join(debug_dir, f"{prefix}_trainer.ckpt")
+                self.trainer.save_checkpoint(ckpt_path)
+
+                # Serialize input batch and model state for debugging
+                def _to_cpu(obj):
+                    if torch.is_tensor(obj):
+                        return obj.detach().cpu()
+                    if isinstance(obj, dict):
+                        return {k: _to_cpu(v) for k, v in obj.items()}
+                    if isinstance(obj, (list, tuple)):
+                        typ = type(obj)
+                        return typ(_to_cpu(x) for x in obj)
+                    return obj
+
+                noisy_batch_cpu = _to_cpu(noisy_batch)
+                batch_path = os.path.join(debug_dir, f"{prefix}_noisy_batch.pt")
+                model_path = os.path.join(debug_dir, f"{prefix}_model_state.pt")
+                torch.save(noisy_batch_cpu, batch_path)
+                torch.save(self.model.state_dict(), model_path)
+                self._print_logger.error(
+                    f"NaN ValueError encountered. Saved artifacts: batch={batch_path}, model={model_path}"
+                )
+            raise e
+
         batch_losses = self.model_step(noisy_batch)
         num_batch = batch_losses["fm_trans_loss"].shape[0]
 
