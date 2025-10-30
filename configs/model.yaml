@@ -2,6 +2,7 @@ model:
   node_embed_size: 256
   edge_embed_size: 128
   symmetric: False
+  strict_time_conditioning: False
   node_features:
     c_s: ${model.node_embed_size}
     c_pos_emb: 128

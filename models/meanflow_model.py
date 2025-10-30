@@ -63,6 +63,11 @@ class MeanFlowModel(nn.Module):
                     edge_embed_out=self._model_conf.edge_embed_size,
                 )
 
+            if self._model_conf.get("strict_time_conditioning", False):
+                self.trunk[f"skip_embed_{b}"] = nn.Linear(
+                    self._model_conf.node_embed_size, self._ipa_conf.c_s
+                )
+
     def forward(self, trans_t, rotmat_t, t, r, feats):
         node_mask = feats["res_mask"]
         edge_mask = node_mask[:, None] * node_mask[:, :, None]
@@ -104,6 +109,8 @@ class MeanFlowModel(nn.Module):
             )
             ipa_embed *= node_mask[..., None]
             node_embed = self.trunk[f"ipa_ln_{b}"](node_embed + ipa_embed)
+            if self._model_conf.get("strict_time_conditioning", False):
+                node_embed = node_embed + self.trunk[f"skip_embed_{b}"](init_node_embed)
             seq_tfmr_out = self.trunk[f"seq_tfmr_{b}"](
                 node_embed, src_key_padding_mask=(1 - node_mask).to(torch.bool)
             )
