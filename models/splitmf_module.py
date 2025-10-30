@@ -333,7 +333,7 @@ class SplitMeanFlowModule(LightningModule):
 
         if len(self.validation_epoch_one_step_samples) > 0:
             self.logger.log_table(
-                key="valid/one_step_samples",
+                key="valid_one_step/samples",
                 columns=["sample_path", "global_step", "Protein"],
                 data=self.validation_epoch_one_step_samples,
             )
@@ -341,7 +341,7 @@ class SplitMeanFlowModule(LightningModule):
         val_epoch_metrics = pd.concat(self.validation_epoch_one_step_metrics)
         for metric_name, metric_val in val_epoch_metrics.mean().to_dict().items():
             self._log_scalar(
-                f"valid/one_step_{metric_name}",
+                f"valid_one_step/{metric_name}",
                 metric_val,
                 on_step=False,
                 on_epoch=True,
@@ -425,6 +425,8 @@ class SplitMeanFlowModule(LightningModule):
         for loss_name, batch_loss in batch_losses.items():
             if "fm" in loss_name and self._exp_cfg.training.flow_matching_loss_use_s:
                 batch_t = noisy_batch["s"]
+            if "sg" in loss_name:
+                batch_t = noisy_batch["r"] - noisy_batch["so3_t"]
             else:
                 batch_t = noisy_batch["so3_t"]
 
@@ -436,7 +438,7 @@ class SplitMeanFlowModule(LightningModule):
             # Log the stratified losses.
             for k, v in stratified_losses.items():
                 self._log_scalar(
-                    f"train/stratified_loss/{k}",
+                    f"stratified_loss/{k}",
                     v,
                     prog_bar=False,
                     batch_size=num_batch,
