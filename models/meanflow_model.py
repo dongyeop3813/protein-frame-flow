@@ -139,7 +139,7 @@ class MeanFlowModel(nn.Module):
         trans_1, rotmat_1 = self(trans_t, rotmat_t, t, r, feats)
 
         trans_vf = (trans_1 - trans_t) / ((1 - t)[..., None] + 1e-6)
-        rot_vf = self.interpolant.rots_cond_vf(t, rotmat_1, rotmat_t)
+        rot_vf = self.interpolant.rots_cond_vf(t, rotmat_t, rotmat_1)
 
         return trans_vf, rot_vf
 
