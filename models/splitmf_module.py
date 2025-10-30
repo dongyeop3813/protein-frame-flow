@@ -425,14 +425,17 @@ class SplitMeanFlowModule(LightningModule):
         for loss_name, batch_loss in batch_losses.items():
             if "fm" in loss_name and self._exp_cfg.training.flow_matching_loss_use_s:
                 batch_t = noisy_batch["s"]
+                t_label = "t"
             if "sg" in loss_name:
                 batch_t = noisy_batch["r"] - noisy_batch["so3_t"]
+                t_label = "r-t"
             else:
                 batch_t = noisy_batch["so3_t"]
+                t_label = "t"
 
             # Bin the loss by timestep.
             stratified_losses = mu.t_stratified_loss(
-                batch_t, batch_loss, loss_name=loss_name
+                batch_t, batch_loss, loss_name=loss_name, t_label=t_label
             )
 
             # Log the stratified losses.

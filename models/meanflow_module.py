@@ -339,7 +339,7 @@ class MeanFlowModule(LightningModule):
 
             # Bin the loss by timestep.
             stratified_losses = mu.t_stratified_loss(
-                batch_r_minus_t, batch_loss, loss_name=loss_name
+                batch_r_minus_t, batch_loss, loss_name=loss_name, t_label="r-t"
             )
 
             # Log the stratified losses.
