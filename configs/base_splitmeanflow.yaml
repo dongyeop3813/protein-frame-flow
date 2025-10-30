@@ -75,19 +75,19 @@ experiment:
   warm_start_cfg_override: True
   training:
     flow_matching_loss_use_s: True
-    translation_loss_weight: 0.2
+    translation_loss_weight: 0.02
     rotation_loss_weight: 1.0
-    semigroup_loss_weight: 2.0
+    semigroup_loss_weight: 4.0
     flow_matching_loss_weight: 1.0
   wandb:
     name: semiMF_${data.task}_${data.dataset}_debug
-    project: se3-fm
+    project: se3-SplitMF-loss-weight-tuning
   optimizer:
     lr: 0.0001
   trainer:
     overfit_batches: 10
     min_epochs: 1 # prevents early stopping
-    max_epochs: 1000
+    max_epochs: 4000
     accelerator: gpu
     log_every_n_steps: 1
     deterministic: True
