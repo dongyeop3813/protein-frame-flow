@@ -62,6 +62,31 @@ def ordered_interval_sample(
     return t, r
 
 
+def length_first_sample(
+    batch_size: int,
+    device: torch.device,
+    boundary_ratio: float = 0.75,
+    alpha: float = 0.5,
+    beta: float = 0.5,
+) -> tuple[Tensor, Tensor]:
+    is_boundary = sample_boundary_mask(batch_size, device, boundary_ratio)
+
+    alpha = torch.tensor([alpha], device=device)
+    beta = torch.tensor([beta], device=device)
+
+    length = torch.distributions.beta.Beta(alpha, beta).sample((batch_size,))
+
+    t = torch.rand(batch_size, device=device) * (1 - length)
+    r = t + length
+
+    t_raw = torch.rand(batch_size, device=device)
+
+    t = torch.where(is_boundary, t_raw, t)
+    r = torch.where(is_boundary, t_raw, r)
+
+    return t, r
+
+
 def ordered_three_point_sample(
     batch_size: int,
     device: torch.device,
@@ -79,6 +104,21 @@ def ordered_three_point_sample(
     return t, s, r
 
 
+def length_first_three_point_sample(
+    batch_size: int,
+    device: torch.device,
+    alpha: float = 0.5,
+    beta: float = 0.5,
+) -> tuple[Tensor, Tensor, Tensor]:
+
+    t, r = length_first_sample(batch_size, device, 0.0, alpha, beta)
+
+    w = torch.rand(batch_size, device=device)
+    s = w * r + (1 - w) * t
+
+    return t, s, r
+
+
 def create_time_sampler(cfg) -> Callable[[int, torch.device], Tensor]:
     if cfg.type == "uniform":
         sample_fn = partial(uniform_sample, min_t=cfg.min_t)
@@ -87,9 +127,6 @@ def create_time_sampler(cfg) -> Callable[[int, torch.device], Tensor]:
         sample_fn = partial(
             logit_norm_sample, mu=cfg.mu, sigma=cfg.sigma, min_t=cfg.min_t
         )
-
-    else:
-        raise ValueError(f"Invalid time sampler type: {cfg.type}")
 
     # If we need only single time point sample, return the current time sampler
     need_interval_sample = "interval_sample" in cfg
@@ -110,6 +147,20 @@ def create_time_sampler(cfg) -> Callable[[int, torch.device], Tensor]:
             sample_fn=sample_fn,
             boundary_ratio=cfg.boundary_ratio,
         )
+    elif need_interval_sample and cfg.interval_sample == "interval_length_first":
+        sample_fn = partial(
+            length_first_sample,
+            boundary_ratio=cfg.boundary_ratio,
+            alpha=cfg.alpha,
+            beta=cfg.beta,
+        )
+    elif need_three_sample and cfg.three_sample == "interval_length_first":
+        sample_fn = partial(
+            length_first_three_point_sample,
+            alpha=cfg.alpha,
+            beta=cfg.beta,
+        )
+
     elif need_three_sample and cfg.three_sample == "ordered":
         sample_fn = partial(
             ordered_three_point_sample,
