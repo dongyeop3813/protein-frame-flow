@@ -448,15 +448,10 @@ class Interpolant:
         return trans_t, rotmats_t, logs_traj
 
 
-class MeanFlowInterpolant:
-
+class IGSO3Prior:
     def __init__(self, cfg):
         self._cfg = cfg
-        self._rots_cfg = cfg.rots
-        self._trans_cfg = cfg.trans
-        self._sample_cfg = cfg.sampling
         self._igso3 = None
-        self.time_sampler = create_time_sampler(cfg.time_sampler)
 
     @property
     def igso3(self):
@@ -464,6 +459,43 @@ class MeanFlowInterpolant:
             sigma_grid = torch.linspace(0.1, 1.5, 1000)
             self._igso3 = so3_utils.SampleIGSO3(1000, sigma_grid, cache_dir=".cache")
         return self._igso3
+
+    def sample_noise_like(self, rotmats_1):
+        num_batch, num_res = rotmats_1.shape[:2]
+        noise = self.igso3.sample(torch.tensor([1.5]), num_batch * num_res).to(
+            rotmats_1.device
+        )
+        noise = noise.reshape(num_batch, num_res, 3, 3)
+        rotmats_0 = torch.einsum("...ij,...jk->...ik", rotmats_1, noise)
+        return rotmats_0
+
+
+class UniformSO3Prior:
+    def __init__(self, cfg):
+        self._cfg = cfg
+        self._uniform_so3 = None
+
+    def sample_noise_like(self, rotmats_1):
+        num_batch, num_res = rotmats_1.shape[:2]
+        rotmats_0 = _uniform_so3(num_batch, num_res, rotmats_1.device)
+        return rotmats_0
+
+
+class MeanFlowInterpolant:
+
+    def __init__(self, cfg):
+        if cfg.prior_type == "igso3":
+            self.prior = IGSO3Prior(cfg)
+        elif cfg.prior_type == "uniform":
+            self.prior = UniformSO3Prior(cfg)
+        else:
+            raise ValueError(f"Invalid prior type: {cfg.prior_type}")
+
+        self._cfg = cfg
+        self._rots_cfg = cfg.rots
+        self._trans_cfg = cfg.trans
+        self._sample_cfg = cfg.sampling
+        self.time_sampler = create_time_sampler(cfg.time_sampler)
 
     def set_device(self, device):
         self._device = device
@@ -483,12 +515,7 @@ class MeanFlowInterpolant:
         if self._cfg.use_inference_schedule:
             t = self.rot_sample_kappa(t)
 
-        num_batch, num_res = res_mask.shape
-        noisy_rotmats = self.igso3.sample(torch.tensor([1.5]), num_batch * num_res).to(
-            self._device
-        )
-        noisy_rotmats = noisy_rotmats.reshape(num_batch, num_res, 3, 3)
-        rotmats_0 = torch.einsum("...ij,...jk->...ik", rotmats_1, noisy_rotmats)
+        rotmats_0 = self.prior.sample_noise_like(rotmats_1)
         rotmats_t = so3_utils.geodesic_t(t[..., None], rotmats_1, rotmats_0)
         identity = torch.eye(3, device=self._device)
         rotmats_t = rotmats_t * res_mask[..., None, None] + identity[None, None] * (
@@ -520,21 +547,17 @@ class MeanFlowInterpolant:
         noisy_batch["r"] = r
 
         # Apply corruptions
-        if self._trans_cfg.corrupt:
-            trans_t = self._corrupt_trans(trans_1, r3_t, res_mask, diffuse_mask)
-        else:
-            trans_t = trans_1
+
+        trans_t = self._corrupt_trans(trans_1, r3_t, res_mask, diffuse_mask)
         if torch.any(torch.isnan(trans_t)):
             raise ValueError("NaN in trans_t during corruption")
         noisy_batch["trans_t"] = trans_t
 
-        if self._rots_cfg.corrupt:
-            rotmats_t = self._corrupt_rotmats(rotmats_1, so3_t, res_mask, diffuse_mask)
-        else:
-            rotmats_t = rotmats_1
+        rotmats_t = self._corrupt_rotmats(rotmats_1, so3_t, res_mask, diffuse_mask)
         if torch.any(torch.isnan(rotmats_t)):
             raise ValueError("NaN in rotmats_t during corruption")
         noisy_batch["rotmats_t"] = rotmats_t
+
         return noisy_batch
 
     def rot_sample_kappa(self, t):

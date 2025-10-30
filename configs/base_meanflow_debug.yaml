@@ -23,6 +23,7 @@ scope_dataset:
     max_num_res: 70
 
 interpolant:
+  prior_type: uniform
 
   time_sampler:
     type: lognorm
