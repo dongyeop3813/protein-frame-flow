@@ -74,7 +74,7 @@ def length_first_sample(
     alpha = torch.tensor([alpha], device=device)
     beta = torch.tensor([beta], device=device)
 
-    length = torch.distributions.beta.Beta(alpha, beta).sample((batch_size,))
+    length = torch.distributions.beta.Beta(alpha, beta).sample((batch_size,)).squeeze()
 
     t = torch.rand(batch_size, device=device) * (1 - length)
     r = t + length
