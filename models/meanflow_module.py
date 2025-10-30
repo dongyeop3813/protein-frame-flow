@@ -337,14 +337,11 @@ class MeanFlowModule(LightningModule):
         # Losses to track. Stratified across t.
         for loss_name, batch_loss in batch_losses.items():
             # Choose the appropriate timestep to bin by.
-            if loss_name == "rot_loss":
-                batch_t = torch.squeeze(noisy_batch["so3_t"])
-            else:
-                batch_t = torch.squeeze(noisy_batch["r3_t"])
+            batch_r_minus_t = torch.squeeze(noisy_batch["r"] - noisy_batch["so3_t"])
 
             # Bin the loss by timestep.
             stratified_losses = mu.t_stratified_loss(
-                batch_t, batch_loss, loss_name=loss_name
+                batch_r_minus_t, batch_loss, loss_name=loss_name
             )
 
             # Log the stratified losses.
