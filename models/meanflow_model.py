@@ -138,8 +138,12 @@ class MeanFlowModel(nn.Module):
     def avg_vel(self, trans_t, rotmat_t, t, r, feats):
         trans_1, rotmat_1 = self(trans_t, rotmat_t, t, r, feats)
 
-        trans_vf = (trans_1 - trans_t) / ((1 - t)[..., None] + 1e-6)
-        rot_vf = self.interpolant.rots_cond_vf(t, rotmat_t, rotmat_1)
+        if self._model_conf.get("cond_vel_parameterization", True):
+            trans_vf = (trans_1 - trans_t) / ((1 - t)[..., None] + 1e-6)
+            rot_vf = self.interpolant.rots_cond_vf(t, rotmat_t, rotmat_1)
+        else:
+            trans_vf = trans_1 - trans_t
+            rot_vf = calc_rot_vf(rotmat_t, rotmat_1)
 
         return trans_vf, rot_vf
 

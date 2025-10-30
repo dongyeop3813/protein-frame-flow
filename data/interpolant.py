@@ -566,15 +566,12 @@ class MeanFlowInterpolant:
     def rots_cond_vf(self, t, rotmats_t, rotmats_1):
         return self.so3_interpolant.cond_vf(t, rotmats_t, rotmats_1)
 
-    def _trans_euler_step(self, d_t, t, trans_1, trans_t):
+    def _trans_euler_step(self, d_t, trans_t, v_t):
         assert d_t > 0
-        trans_vf = self._trans_vector_field(t, trans_1, trans_t)
-        return trans_t + trans_vf * d_t
+        return trans_t + v_t * d_t
 
-    def _rots_euler_step(self, d_t, t, rotmats_1, rotmats_t):
-        return self.so3_interpolant.euler_step_with_x1_prediction(
-            d_t, t, rotmats_1, rotmats_t
-        )
+    def _rots_euler_step(self, d_t, rotmats_t, v_t):
+        return self.so3_interpolant.euler_step(d_t, rotmats_t, v_t)
 
     def sample(
         self,
@@ -616,7 +613,6 @@ class MeanFlowInterpolant:
         t_1 = ts[0]
 
         prot_traj = [(trans_0, rotmats_0)]
-        clean_traj = []
         for i, t_2 in enumerate(ts[1:]):
             if verbose:  # and i % 1 == 0:
                 print(f"{i=}, t={t_1.item():.2f}")
@@ -624,22 +620,18 @@ class MeanFlowInterpolant:
                     torch.cuda.mem_get_info(trans_0.device),
                     torch.cuda.memory_allocated(trans_0.device),
                 )
+
             # Run model.
             trans_t, rotmats_t = prot_traj[-1]
             r = t = torch.ones((num_batch, 1), device=self._device) * t_1
             d_t = t_2 - t_1
 
             with torch.no_grad():
-                pred_trans_1, pred_rotmats_1 = model(trans_t, rotmats_t, t, r, batch)
-
-            # Process model output.
-            clean_traj.append(
-                (pred_trans_1.detach().cpu(), pred_rotmats_1.detach().cpu())
-            )
+                v_trans, v_rot = model.avg_vel(trans_t, rotmats_t, t, r, batch)
 
             # Take reverse step
-            trans_t_2 = self._trans_euler_step(d_t, t_1, pred_trans_1, trans_t)
-            rotmats_t_2 = self._rots_euler_step(d_t, t_1, pred_rotmats_1, rotmats_t)
+            trans_t_2 = self._trans_euler_step(d_t, trans_t, v_trans)
+            rotmats_t_2 = self._rots_euler_step(d_t, rotmats_t, v_rot)
 
             prot_traj.append((trans_t_2, rotmats_t_2))
             t_1 = t_2
@@ -650,16 +642,13 @@ class MeanFlowInterpolant:
         r = t = torch.ones((num_batch, 1), device=self._device) * t_1
         with torch.no_grad():
             pred_trans_1, pred_rotmats_1 = model(trans_t, rotmats_t, t, r, batch)
-        clean_traj.append((pred_trans_1.detach().cpu(), pred_rotmats_1.detach().cpu()))
         prot_traj.append((pred_trans_1, pred_rotmats_1))
 
         # Convert trajectories to atom37.
         atom37_traj = all_atom.transrot_to_atom37(prot_traj, res_mask)
-        clean_atom37_traj = all_atom.transrot_to_atom37(clean_traj, res_mask)
-
         if DEBUG:
             return prot_traj, res_mask
-        return atom37_traj, clean_atom37_traj, clean_traj
+        return atom37_traj, None, None
 
     def init_prior(self, num_batch, num_res):
         # Set-up initial prior samples
@@ -700,95 +689,6 @@ class MeanFlowInterpolant:
         if DEBUG:
             return trans_r, rotmats_r, res_mask
         return atom37[-1]
-
-    def guidance(
-        self,
-        trans_t,
-        rotmats_t,
-        model_out,
-        motif_mask,
-        R_motif,
-        trans_motif,
-        Log_delta_R,
-        delta_x,
-        t,
-        d_t,
-        logs_traj,
-    ):
-        # Select motif
-        motif_mask = motif_mask.clone()
-        trans_pred = model_out["pred_trans"][:, motif_mask]  # [B, motif_res, 3]
-        R_pred = model_out["pred_rotmats"][:, motif_mask]  # [B, motif_res, 3, 3]
-
-        # Proposal for marginalising motif rotation
-        F = twisting.motif_rots_vec_F(
-            trans_motif,
-            R_motif,
-            self._cfg.twisting.num_rots,
-            align=self._cfg.twisting.align,
-            scale=self._cfg.twisting.scale_rots,
-            device=self._device,
-            dtype=torch.float32,
-        )
-
-        # Estimate p(motif|predicted_motif)
-        grad_Log_delta_R, grad_x_log_p_motif, logs = twisting.grad_log_lik_approx(
-            R_pred,
-            trans_pred,
-            R_motif,
-            trans_motif,
-            Log_delta_R,
-            delta_x,
-            None,
-            None,
-            None,
-            F,
-            twist_potential_rot=self._cfg.twisting.potential_rot,
-            twist_potential_trans=self._cfg.twisting.potential_trans,
-        )
-
-        with torch.no_grad():
-            # Choose scaling
-            t_trans = t
-            t_so3 = t
-            if self._cfg.twisting.scale_w_t == "ot":
-                var_trans = ((1 - t_trans) / t_trans)[:, None]
-                var_rot = ((1 - t_so3) / t_so3)[:, None, None]
-            elif self._cfg.twisting.scale_w_t == "linear":
-                var_trans = (1 - t)[:, None]
-                var_rot = (1 - t_so3)[:, None, None]
-            elif self._cfg.twisting.scale_w_t == "constant":
-                num_batch = trans_pred.shape[0]
-                var_trans = torch.ones((num_batch, 1, 1)).to(R_pred.device)
-                var_rot = torch.ones((num_batch, 1, 1, 1)).to(R_pred.device)
-            var_trans = var_trans + self._cfg.twisting.obs_noise**2
-            var_rot = var_rot + self._cfg.twisting.obs_noise**2
-
-            trans_scale_t = self._cfg.twisting.scale / var_trans
-            rot_scale_t = self._cfg.twisting.scale / var_rot
-
-            # Compute update
-            trans_t, rotmats_t = twisting.step(
-                trans_t,
-                rotmats_t,
-                grad_x_log_p_motif,
-                grad_Log_delta_R,
-                d_t,
-                trans_scale_t,
-                rot_scale_t,
-                self._cfg.twisting.update_trans,
-                self._cfg.twisting.update_rot,
-            )
-
-        # delete unsused arrays to prevent from any memory leak
-        del grad_Log_delta_R
-        del grad_x_log_p_motif
-        del Log_delta_R
-        del delta_x
-        for key, value in model_out.items():
-            model_out[key] = value.detach().requires_grad_(False)
-
-        return trans_t, rotmats_t, logs_traj
 
 
 class SplitMeanFlowInterpolant(MeanFlowInterpolant):
