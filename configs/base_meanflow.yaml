@@ -58,7 +58,6 @@ interpolant:
     do_sde: False
 
   self_condition: false
-  use_inference_schedule: false
 
 experiment:
   debug: False

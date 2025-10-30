@@ -8,6 +8,7 @@ from data.time_sampler import create_time_sampler
 import copy
 from torch import autograd
 from motif_scaffolding import twisting
+from data.so3_interpolant import SO3Interpolant
 
 
 DEBUG = False
@@ -496,6 +497,7 @@ class MeanFlowInterpolant:
         self._trans_cfg = cfg.trans
         self._sample_cfg = cfg.sampling
         self.time_sampler = create_time_sampler(cfg.time_sampler)
+        self.so3_interpolant = SO3Interpolant(self._rots_cfg)
 
     def set_device(self, device):
         self._device = device
@@ -512,11 +514,10 @@ class MeanFlowInterpolant:
         return trans_t * res_mask[..., None]
 
     def _corrupt_rotmats(self, rotmats_1, t, res_mask, diffuse_mask):
-        if self._cfg.use_inference_schedule:
-            t = self.rot_sample_kappa(t)
-
         rotmats_0 = self.prior.sample_noise_like(rotmats_1)
-        rotmats_t = so3_utils.geodesic_t(t[..., None], rotmats_1, rotmats_0)
+        rotmats_t = self.so3_interpolant.sample_xt(rotmats_0, rotmats_1, t)
+
+        # Apply masking if task is motif scaffolding or some residue is missing.
         identity = torch.eye(3, device=self._device)
         rotmats_t = rotmats_t * res_mask[..., None, None] + identity[None, None] * (
             1 - res_mask[..., None, None]
@@ -547,42 +548,23 @@ class MeanFlowInterpolant:
         noisy_batch["r"] = r
 
         # Apply corruptions
-
-        trans_t = self._corrupt_trans(trans_1, r3_t, res_mask, diffuse_mask)
+        trans_t = self._corrupt_trans(trans_1, t, res_mask, diffuse_mask)
         if torch.any(torch.isnan(trans_t)):
             raise ValueError("NaN in trans_t during corruption")
         noisy_batch["trans_t"] = trans_t
 
-        rotmats_t = self._corrupt_rotmats(rotmats_1, so3_t, res_mask, diffuse_mask)
+        rotmats_t = self._corrupt_rotmats(rotmats_1, t, res_mask, diffuse_mask)
         if torch.any(torch.isnan(rotmats_t)):
             raise ValueError("NaN in rotmats_t during corruption")
         noisy_batch["rotmats_t"] = rotmats_t
 
         return noisy_batch
 
-    def rot_sample_kappa(self, t):
-        if self._rots_cfg.sample_schedule == "exp":
-            return 1 - torch.exp(-t * self._rots_cfg.exp_rate)
-        elif self._rots_cfg.sample_schedule == "linear":
-            return t
-        else:
-            raise ValueError(f"Invalid schedule: {self._rots_cfg.sample_schedule}")
-
     def _trans_vector_field(self, t, trans_1, trans_t):
         return (trans_1 - trans_t) / (1 - t)
 
-    def _rots_vector_field(self, t, rotmats_1, rotmats_t):
-        v = so3_utils.calc_rot_vf(rotmats_t, rotmats_1)
-
-        if not self._cfg.use_inference_schedule:
-            return v / ((1 - t)[..., None] + 1e-6)
-
-        if self._rots_cfg.sample_schedule == "exp":
-            return self._rots_cfg.exp_rate * v
-        elif self._rots_cfg.sample_schedule == "linear":
-            return v / ((1 - t)[..., None] + 1e-6)
-        else:
-            raise ValueError(f"Invalid schedule: {self._rots_cfg.sample_schedule}")
+    def rots_cond_vf(self, t, rotmats_t, rotmats_1):
+        return self.so3_interpolant.cond_vf(t, rotmats_t, rotmats_1)
 
     def _trans_euler_step(self, d_t, t, trans_1, trans_t):
         assert d_t > 0
@@ -590,15 +572,9 @@ class MeanFlowInterpolant:
         return trans_t + trans_vf * d_t
 
     def _rots_euler_step(self, d_t, t, rotmats_1, rotmats_t):
-        if self._rots_cfg.sample_schedule == "linear":
-            scaling = 1 / (1 - t)
-        elif self._rots_cfg.sample_schedule == "exp":
-            scaling = self._rots_cfg.exp_rate
-        else:
-            raise ValueError(
-                f"Unknown sample schedule {self._rots_cfg.sample_schedule}"
-            )
-        return so3_utils.geodesic_t(scaling * d_t, rotmats_1, rotmats_t)
+        return self.so3_interpolant.euler_step_with_x1_prediction(
+            d_t, t, rotmats_1, rotmats_t
+        )
 
     def sample(
         self,
@@ -681,7 +657,6 @@ class MeanFlowInterpolant:
         atom37_traj = all_atom.transrot_to_atom37(prot_traj, res_mask)
         clean_atom37_traj = all_atom.transrot_to_atom37(clean_traj, res_mask)
 
-        # TODO: remove this. This is temp code for debug.
         if DEBUG:
             return prot_traj, res_mask
         return atom37_traj, clean_atom37_traj, clean_traj
@@ -722,7 +697,6 @@ class MeanFlowInterpolant:
         # Convert the SE(3) sample to atom37.
         atom37 = all_atom.transrot_to_atom37([(trans_r, rotmats_r)], res_mask)
 
-        # TODO: remove this. This is temp code for debug.
         if DEBUG:
             return trans_r, rotmats_r, res_mask
         return atom37[-1]

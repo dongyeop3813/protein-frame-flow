@@ -117,9 +117,7 @@ class MeanFlowModule(LightningModule):
         # Conditional velocity fields
         # Here, v_rot is a rotation vector.
         v_trans = (trans_1 - trans_t) / (1 - t[..., None] + 1e-6)
-        v_rot = so3_utils.calc_rot_vf(rot_t, rot_1.type(torch.float32)) / (
-            1 - t[..., None] + 1e-6
-        )
+        v_rot = self.interpolant.rots_cond_vf(t, rot_t, rot_1)
         if torch.any(torch.isnan(v_rot)):
             raise ValueError("NaN encountered in v_rot")
 

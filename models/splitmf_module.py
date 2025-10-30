@@ -103,7 +103,7 @@ class SplitMeanFlowModule(LightningModule):
 
         one_minus_t = torch.clamp(1 - t, min=1e-4)[..., None]
         v_trans = (trans_1 - trans_t) / one_minus_t
-        v_rot = so3_utils.calc_rot_vf(rot_t, rot_1) / one_minus_t
+        v_rot = self.interpolant.rots_cond_vf(t, rot_t, rot_1)
         if torch.any(torch.isnan(v_rot)):
             raise ValueError("NaN encountered in v_rot")
 
