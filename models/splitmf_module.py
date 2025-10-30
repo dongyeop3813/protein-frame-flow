@@ -129,21 +129,32 @@ class SplitMeanFlowModule(LightningModule):
     def semigroup_loss(self, trans_t, rot_t, trans_r, rot_r, t, r, loss_mask, feats):
         loss_denom = torch.sum(loss_mask, dim=-1) * 3
 
-        r_minus_t = torch.clamp(r - t, min=1e-4)[..., None]
-        u_trans_tgt = (trans_r - trans_t) / r_minus_t
-        u_rot_tgt = so3_utils.calc_rot_vf(rot_t, rot_r) / r_minus_t
+        if self._exp_cfg.training.semigroup_loss_on_velocity:
+            r_minus_t = torch.clamp(r - t, min=1e-4)[..., None]
+            u_trans_tgt = (trans_r - trans_t) / r_minus_t
+            u_rot_tgt = so3_utils.calc_rot_vf(rot_t, rot_r) / r_minus_t
 
-        u_trans, u_rot = self.model.avg_vel(trans_t, rot_t, t, r, feats)
+            u_trans, u_rot = self.model.avg_vel(trans_t, rot_t, t, r, feats)
 
-        # Semigroup loss on translation.
-        trans_loss = torch.sum(
-            ((u_trans - u_trans_tgt) * loss_mask[..., None]) ** 2, dim=(-1, -2)
-        )
+            # Semigroup loss on translation.
+            trans_loss = torch.sum(
+                ((u_trans - u_trans_tgt) * loss_mask[..., None]) ** 2, dim=(-1, -2)
+            )
 
-        # Semigroup loss on rotation.
-        rot_loss = torch.sum(
-            ((u_rot - u_rot_tgt) * loss_mask[..., None]) ** 2, dim=(-1, -2)
-        )
+            # Semigroup loss on rotation.
+            rot_loss = torch.sum(
+                ((u_rot - u_rot_tgt) * loss_mask[..., None]) ** 2, dim=(-1, -2)
+            )
+        else:
+            hat_trans_r, hat_rot_r = self.forward_flow(trans_t, rot_t, t, r, feats)
+
+            trans_loss = torch.sum(
+                ((hat_trans_r - trans_r) * loss_mask[..., None]) ** 2, dim=(-1, -2)
+            )
+            rot_loss = torch.sum(
+                so3_utils.rot_squared_dist(hat_rot_r, rot_r) * loss_mask[..., None],
+                dim=-1,
+            )
 
         # Normalize by the number of residues.
         trans_loss /= loss_denom

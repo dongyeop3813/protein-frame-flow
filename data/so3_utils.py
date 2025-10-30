@@ -616,6 +616,18 @@ def d1_log_v2(
     return skew_matrix_to_vector(skew_mat)
 
 
+def rot_squared_dist(
+    mat_1: torch.Tensor, mat_2: torch.Tensor, eps=1e-6
+) -> torch.Tensor:
+    """
+    Calculate the squared distance of two rotation matrices.
+    """
+    R = rot_mult(rot_transpose(mat_1), mat_2)
+    trace = R[..., 0, 0] + R[..., 1, 1] + R[..., 2, 2]
+    cos_theta = ((trace - 1.0) * 0.5).clamp(-1.0 + eps, 1.0 - eps)
+    return torch.acos(cos_theta) ** 2
+
+
 class SO3LookupCache:
     def __init__(
         self,
