@@ -119,6 +119,18 @@ def length_first_three_point_sample(
     return t, s, r
 
 
+def length_first_then_midpoint_sample(
+    batch_size: int,
+    device: torch.device,
+    alpha: float = 0.5,
+    beta: float = 0.5,
+) -> tuple[Tensor, Tensor, Tensor]:
+    t, r = length_first_sample(batch_size, device, 0.0, alpha, beta)
+    s = 0.5 * r + 0.5 * t
+
+    return t, s, r
+
+
 def create_time_sampler(cfg) -> Callable[[int, torch.device], Tensor]:
     if cfg.type == "uniform":
         sample_fn = partial(uniform_sample, min_t=cfg.min_t)
@@ -160,7 +172,12 @@ def create_time_sampler(cfg) -> Callable[[int, torch.device], Tensor]:
             alpha=cfg.alpha,
             beta=cfg.beta,
         )
-
+    elif need_three_sample and cfg.three_sample == "interval_length_first_midpoint":
+        sample_fn = partial(
+            length_first_then_midpoint_sample,
+            alpha=cfg.alpha,
+            beta=cfg.beta,
+        )
     elif need_three_sample and cfg.three_sample == "ordered":
         sample_fn = partial(
             ordered_three_point_sample,
