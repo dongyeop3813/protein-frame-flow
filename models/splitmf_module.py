@@ -101,7 +101,7 @@ class SplitMeanFlowModule(LightningModule):
         # Here, v_rot is a rotation vector.
         loss_denom = torch.sum(loss_mask, dim=-1) * 3
 
-        one_minus_t = torch.clamp(1 - t, min=1e-4)[..., None]
+        one_minus_t = torch.clamp(1 - t, min=1e-1)[..., None]
         v_trans = (trans_1 - trans_t) / one_minus_t
         v_rot = self.interpolant.rots_cond_vf(t, rot_t, rot_1)
         if torch.any(torch.isnan(v_rot)):

@@ -42,7 +42,8 @@ class SO3Interpolant:
         if self.cfg.sample_schedule == "exp":
             return self.cfg.exp_rate * v
         elif self.cfg.sample_schedule == "linear":
-            return v / ((1 - t)[..., None] + 1e-6)
+            # return v / ((1 - t)[..., None] + 1e-6)
+            return v / torch.clamp(1 - t, min=1e-1)[..., None]
         else:
             raise ValueError(f"Invalid schedule: {self.cfg.sample_schedule}")
 
