@@ -146,13 +146,15 @@ class SplitMeanFlowModule(LightningModule):
                 ((u_rot - u_rot_tgt) * loss_mask[..., None]) ** 2, dim=(-1, -2)
             )
         else:
-            hat_trans_r, hat_rot_r = self.forward_flow(trans_t, rot_t, t, r, feats)
+            hat_trans_r, hat_rot_r = self.model.forward_flow(
+                trans_t, rot_t, t, r, feats
+            )
 
             trans_loss = torch.sum(
                 ((hat_trans_r - trans_r) * loss_mask[..., None]) ** 2, dim=(-1, -2)
             )
             rot_loss = torch.sum(
-                so3_utils.rot_squared_dist(hat_rot_r, rot_r) * loss_mask[..., None],
+                so3_utils.rot_squared_dist(hat_rot_r, rot_r),
                 dim=-1,
             )
 
