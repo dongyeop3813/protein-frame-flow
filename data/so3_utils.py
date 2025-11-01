@@ -151,7 +151,9 @@ def rotvec_to_rotmat(rotation_vectors: torch.Tensor, tol: float = 1e-7) -> torch
         torch.Tensor: Rotation in rotation matrix representation.
     """
     # Compute rotation angle as vector norm.
-    rotation_angles = torch.norm(rotation_vectors, dim=-1)
+    # NOTE: 251031, replace torch.norm with safe norm for differentiable computation.
+    # rotation_angles = torch.norm(rotation_vectors, dim=-1)
+    rotation_angles = torch.sqrt((rotation_vectors**2).sum(dim=-1) + 1e-6)
 
     # Map axis to skew matrix basis.
     skew_matrices = vector_to_skew_matrix(rotation_vectors)

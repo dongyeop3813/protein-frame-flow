@@ -88,7 +88,7 @@ experiment:
   trainer:
     overfit_batches: 10
     min_epochs: 1 # prevents early stopping
-    max_epochs: 4000
+    max_epochs: 10000
     accelerator: gpu
     log_every_n_steps: 1
     deterministic: True
