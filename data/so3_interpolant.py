@@ -16,6 +16,11 @@ class LinearSchedule:
         return t
 
 
+class QuadraticSchedule:
+    def __call__(self, t):
+        return t**2
+
+
 class SO3Interpolant:
     def __init__(self, cfg):
         self.cfg = cfg
@@ -24,6 +29,8 @@ class SO3Interpolant:
             self.kappa = ExpSchedule(self.cfg.exp_rate)
         elif self.cfg.sample_schedule == "linear":
             self.kappa = LinearSchedule()
+        elif self.cfg.sample_schedule == "quadratic":
+            self.kappa = QuadraticSchedule()
         else:
             raise ValueError(f"Invalid sample schedule: {self.cfg.sample_schedule}")
 
@@ -44,6 +51,9 @@ class SO3Interpolant:
         elif self.cfg.sample_schedule == "linear":
             # return v / ((1 - t)[..., None] + 1e-6)
             return v / torch.clamp(1 - t, min=1e-1)[..., None]
+        elif self.cfg.sample_schedule == "quadratic":
+            scale = 2 * t / torch.clamp(1 - t**2, min=1e-1)[..., None]
+            return scale * v
         else:
             raise ValueError(f"Invalid schedule: {self.cfg.sample_schedule}")
 
@@ -58,6 +68,8 @@ class SO3Interpolant:
             scaling = 1 / (1 - t)
         elif self.cfg.sample_schedule == "exp":
             scaling = self.cfg.exp_rate
+        elif self.cfg.sample_schedule == "quadratic":
+            scaling = 2 * t / torch.clamp(1 - t**2, min=1e-1)[..., None]
         else:
             raise ValueError(f"Unknown sample schedule {self.cfg.sample_schedule}")
         return so3_utils.geodesic_t(scaling * d_t, x_1_pred, x_t)
