@@ -52,8 +52,8 @@ class SO3Interpolant:
             # return v / ((1 - t)[..., None] + 1e-6)
             return v / torch.clamp(1 - t, min=1e-1)[..., None]
         elif self.cfg.sample_schedule == "quadratic":
-            scale = 2 * t / torch.clamp(1 - t**2, min=1e-1)[..., None]
-            return scale * v
+            scale = 2 * t / torch.clamp(1 - t**2, min=1e-1)
+            return scale[..., None] * v
         else:
             raise ValueError(f"Invalid schedule: {self.cfg.sample_schedule}")
 
