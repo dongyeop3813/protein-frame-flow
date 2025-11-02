@@ -641,12 +641,13 @@ class MeanFlowInterpolant:
             t_1 = t_2
 
         # We only integrated to min_t, so need to make a final step
-        t_1 = ts[-1]
-        trans_t, rotmats_t = prot_traj[-1]
-        r = t = torch.ones((num_batch, 1), device=self._device) * t_1
-        with torch.no_grad():
-            pred_trans_1, pred_rotmats_1 = model(trans_t, rotmats_t, t, r, batch)
-        prot_traj.append((pred_trans_1, pred_rotmats_1))
+        if self._sample_cfg.get("last_step", True):
+            t_1 = ts[-1]
+            trans_t, rotmats_t = prot_traj[-1]
+            r = t = torch.ones((num_batch, 1), device=self._device) * t_1
+            with torch.no_grad():
+                pred_trans_1, pred_rotmats_1 = model(trans_t, rotmats_t, t, r, batch)
+            prot_traj.append((pred_trans_1, pred_rotmats_1))
 
         # Convert trajectories to atom37.
         atom37_traj = all_atom.transrot_to_atom37(prot_traj, res_mask)

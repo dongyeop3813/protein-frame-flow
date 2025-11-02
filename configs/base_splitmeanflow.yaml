@@ -64,6 +64,7 @@ interpolant:
   sampling:
     num_timesteps: 100
     do_sde: False
+    last_step: True
 
   self_condition: false
 
