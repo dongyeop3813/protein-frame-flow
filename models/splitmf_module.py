@@ -472,18 +472,19 @@ class SplitMeanFlowModule(LightningModule):
 
     def on_before_optimizer_step(self, optimizer):
         # Compute grad norms and rename keys for cleaner logging
-        raw_norms = grad_norm(self.model, norm_type=2, group_separator="/")
-        if not raw_norms:
-            return
-        cleaned_norms = {}
-        for key, value in raw_norms.items():
-            if key.endswith("_total"):
-                cleaned_norms["grad_norm/total"] = value
-            else:
-                # Original key example: "grad_2.0_norm/<param_path>"
-                suffix = key.split("/", 1)[1] if "/" in key else key
-                cleaned_norms[f"grad_norm/layers/{suffix}"] = value
-        self.log_dict(cleaned_norms)
+        if self._exp_cfg.debug:
+            raw_norms = grad_norm(self.model, norm_type=2, group_separator="/")
+            if not raw_norms:
+                return
+            cleaned_norms = {}
+            for key, value in raw_norms.items():
+                if key.endswith("_total"):
+                    cleaned_norms["grad_norm/total"] = value
+                else:
+                    # Original key example: "grad_2.0_norm/<param_path>"
+                    suffix = key.split("/", 1)[1] if "/" in key else key
+                    cleaned_norms[f"grad_norm/layers/{suffix}"] = value
+            self.log_dict(cleaned_norms)
 
     def predict_step(self, batch, batch_idx):
         del batch_idx  # Unused

@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 
-from models.node_feature_net import MeanFlowNodeFeatureNet
+from models.node_feature_net import MeanFlowNodeFeatureNet, MeanFlowNodeFeatureNetv2
 from models.edge_feature_net import EdgeFeatureNet
 from models import ipa_pytorch
 from data import utils as du
@@ -22,7 +22,10 @@ class MeanFlowModel(nn.Module):
         self.rigids_nm_to_ang = lambda x: x.apply_trans_fn(
             lambda x: x * du.NM_TO_ANG_SCALE
         )
-        self.node_feature_net = MeanFlowNodeFeatureNet(model_conf.node_features)
+        if model_conf.node_features.get("version", "v1") == "v2":
+            self.node_feature_net = MeanFlowNodeFeatureNetv2(model_conf.node_features)
+        else:
+            self.node_feature_net = MeanFlowNodeFeatureNet(model_conf.node_features)
         self.edge_feature_net = EdgeFeatureNet(model_conf.edge_features)
 
         # Attention trunk

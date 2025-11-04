@@ -90,3 +90,60 @@ class MeanFlowNodeFeatureNet(nn.Module):
             self.embed_t(r - so3_t, res_mask),
         ]
         return self.linear(torch.cat(input_feats, dim=-1))
+
+
+class MeanFlowNodeFeatureNetv2(nn.Module):
+    # 20251103: This is the second version of the node feature net.
+    # The difference is that now time gap embedding is passed through a linear layer to be more flexible.
+
+    def __init__(self, module_cfg):
+        super(MeanFlowNodeFeatureNetv2, self).__init__()
+        self._cfg = module_cfg
+        self.c_s = self._cfg.c_s
+        self.c_pos_emb = self._cfg.c_pos_emb
+        self.c_timestep_emb = self._cfg.c_timestep_emb
+        self.time_embedding = (
+            get_positional_time_embedding
+            if self._cfg.time_embedding_type == "positional"
+            else get_time_embedding
+        )
+
+        embed_size = self._cfg.c_pos_emb + self._cfg.c_timestep_emb * 2 + 1
+        if self._cfg.embed_chain:
+            embed_size += self._cfg.c_pos_emb
+
+        self.time_gap_layer = nn.Sequential(
+            nn.Linear(self.c_timestep_emb, self.c_timestep_emb),
+            nn.SiLU(),
+            nn.Linear(self.c_timestep_emb, self.c_timestep_emb),
+        )
+
+        self.layers = nn.Sequential(
+            nn.Linear(embed_size, self.c_s),
+            nn.SiLU(),
+            nn.Linear(self.c_s, self.c_s),
+        )
+
+    def embed_t(self, timesteps, mask):
+        timestep_emb = self.time_embedding(
+            timesteps[:, 0], self.c_timestep_emb, max_positions=2056
+        )[:, None, :].repeat(1, mask.shape[1], 1)
+        return timestep_emb * mask.unsqueeze(-1)
+
+    def forward(self, so3_t, r3_t, r, res_mask, diffuse_mask, pos):
+        # s: [b]
+        time_gap_emb = self.time_gap_layer(self.embed_t(r - so3_t, res_mask))
+
+        # [b, n_res, c_pos_emb]
+        # pos = torch.arange(num_res, dtype=torch.float32).to(device)[None]
+        pos_emb = get_index_embedding(pos, self.c_pos_emb, max_len=2056)
+        pos_emb = pos_emb * res_mask.unsqueeze(-1)
+
+        # [b, n_res, c_timestep_emb]
+        input_feats = [
+            pos_emb,
+            diffuse_mask[..., None],
+            self.embed_t(so3_t, res_mask),
+            time_gap_emb,
+        ]
+        return self.layers(torch.cat(input_feats, dim=-1))
