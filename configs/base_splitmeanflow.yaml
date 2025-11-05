@@ -77,6 +77,7 @@ experiment:
   warm_start: null
   warm_start_cfg_override: True
   training:
+    loss_p: 0.0
     semigroup_loss_on_velocity: True
     translation_loss_weight: 0.1
     rotation_loss_weight: 5.0

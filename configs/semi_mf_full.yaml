@@ -23,6 +23,8 @@ data:
 interpolant:
   prior_type: uniform
 
+  flow_matching_use_new_t: True
+
   time_sampler:
     type: uniform
     min_t: 1e-2
@@ -68,8 +70,8 @@ experiment:
   warm_start: null
   warm_start_cfg_override: True
   training:
+    loss_p: 0.0
     semigroup_loss_on_velocity: True
-    flow_matching_loss_use_s: True
     translation_loss_weight: 0.1
     rotation_loss_weight: 5.0
     semigroup_loss_weight: 4.0

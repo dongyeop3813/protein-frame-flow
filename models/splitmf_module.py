@@ -208,10 +208,11 @@ class SplitMeanFlowModule(LightningModule):
         if torch.any(torch.isnan(semigroup_loss)):
             raise ValueError("NaN loss encountered")
 
-        loss = (
+        unweighted_loss = (
             training_cfg.flow_matching_loss_weight * fm_loss
             + training_cfg.semigroup_loss_weight * semigroup_loss
         )
+        loss = weighted_loss(unweighted_loss, training_cfg.loss_p)
         return {
             "fm_trans_loss": trans_loss,
             "fm_rot_loss": rot_loss,
@@ -222,6 +223,7 @@ class SplitMeanFlowModule(LightningModule):
             "weighted_sg_trans_loss": weighted_sg_trans_loss,
             "weighted_sg_rot_loss": weighted_sg_rot_loss,
             "semigroup_loss": semigroup_loss,
+            "unweighted_loss": unweighted_loss,
             "split_meanflow_loss": loss,
         }
 
