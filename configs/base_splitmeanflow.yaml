@@ -12,8 +12,8 @@ data:
   dataset: scope
 
   loader:
-    num_workers: 4
-    prefetch_factor: 10
+    num_workers: 8
+    prefetch_factor: 20
 
   sampler:
     # Setting for 48GB GPUs
@@ -27,6 +27,8 @@ scope_dataset:
 
 interpolant:
   prior_type: uniform
+
+  flow_matching_use_new_t: True
 
   time_sampler:
     type: uniform
@@ -76,7 +78,6 @@ experiment:
   warm_start_cfg_override: True
   training:
     semigroup_loss_on_velocity: True
-    flow_matching_loss_use_s: True
     translation_loss_weight: 0.1
     rotation_loss_weight: 5.0
     semigroup_loss_weight: 4.0
@@ -94,7 +95,7 @@ experiment:
     log_every_n_steps: 1
     deterministic: True
     strategy: ddp
-    check_val_every_n_epoch: 20
+    check_val_every_n_epoch: 100
     accumulate_grad_batches: 1
     gradient_clip_val: 1000.0
   checkpointer:

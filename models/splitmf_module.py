@@ -170,34 +170,29 @@ class SplitMeanFlowModule(LightningModule):
         if torch.any(torch.sum(loss_mask, dim=-1) < 1):
             raise ValueError("Empty batch encountered")
 
-        # Extract values from noisy batch.
-        trans_1 = noisy_batch["trans_1"]
-        trans_s = noisy_batch["trans_s"]
-        trans_t = noisy_batch["trans_t"]
-        rot_1 = noisy_batch["rotmats_1"]
-        rot_s = noisy_batch["rotmats_s"]
-        rot_t = noisy_batch["rotmats_t"]
-        xt = (trans_t, rot_t)
-        xs = (trans_s, rot_s)
-        x1 = (trans_1, rot_1)
-
-        assert (noisy_batch["r3_t"] == noisy_batch["so3_t"]).all()
-        t = noisy_batch["so3_t"]
-        s = noisy_batch["s"]
-        r = noisy_batch["r"]
+        # Extract sample for flow matching loss.
+        x1 = (noisy_batch["trans_1"], noisy_batch["rotmats_1"])
+        t_fm = noisy_batch["flow_matching_t"]
+        xt_fm = (noisy_batch["trans_t_fm"], noisy_batch["rotmats_t_fm"])
 
         feat = noisy_batch
-
-        if training_cfg.flow_matching_loss_use_s:
-            trans_loss, rot_loss = self.flow_matching_loss(*xs, *x1, s, loss_mask, feat)
-        else:
-            trans_loss, rot_loss = self.flow_matching_loss(*xt, *x1, t, loss_mask, feat)
+        trans_loss, rot_loss = self.flow_matching_loss(
+            *xt_fm, *x1, t_fm, loss_mask, feat
+        )
 
         weighted_trans_loss = trans_loss * training_cfg.translation_loss_weight
         weighted_rot_loss = rot_loss * training_cfg.rotation_loss_weight
         fm_loss = weighted_trans_loss + weighted_rot_loss
         if torch.any(torch.isnan(fm_loss)):
             raise ValueError("NaN loss encountered")
+
+        # Extract sample for semigroup loss.
+        xt = (noisy_batch["trans_t"], noisy_batch["rotmats_t"])
+
+        assert (noisy_batch["r3_t"] == noisy_batch["so3_t"]).all()
+        t = noisy_batch["so3_t"]
+        s = noisy_batch["s"]
+        r = noisy_batch["r"]
 
         # Algebraic consistency.
         with torch.no_grad():
