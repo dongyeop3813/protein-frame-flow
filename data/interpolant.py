@@ -335,28 +335,34 @@ class Interpolant:
             prot_traj.append((trans_t_2, rotmats_t_2))
             t_1 = t_2
 
-        # We only integrated to min_t, so need to make a final step
-        t_1 = ts[-1]
-        trans_t_1, rotmats_t_1 = prot_traj[-1]
-        if self._trans_cfg.corrupt:
-            batch["trans_t"] = trans_t_1
-        else:
-            if trans_1 is None:
-                raise ValueError("Must provide trans_1 if not corrupting.")
-            batch["trans_t"] = trans_1
-        if self._rots_cfg.corrupt:
-            batch["rotmats_t"] = rotmats_t_1
-        else:
-            if rotmats_1 is None:
-                raise ValueError("Must provide rotmats_1 if not corrupting.")
-            batch["rotmats_t"] = rotmats_1
-        batch["t"] = torch.ones((num_batch, 1), device=self._device) * t_1
-        with torch.no_grad():
-            model_out = model(batch)
-        pred_trans_1 = model_out["pred_trans"]
-        pred_rotmats_1 = model_out["pred_rotmats"]
-        clean_traj.append((pred_trans_1.detach().cpu(), pred_rotmats_1.detach().cpu()))
-        prot_traj.append((pred_trans_1, pred_rotmats_1))
+        if LAST_STEP:
+            # We only integrated to min_t, so need to make a final step
+            t_1 = ts[-1]
+            trans_t_1, rotmats_t_1 = prot_traj[-1]
+            if self._trans_cfg.corrupt:
+                batch["trans_t"] = trans_t_1
+            else:
+                if trans_1 is None:
+                    raise ValueError("Must provide trans_1 if not corrupting.")
+                batch["trans_t"] = trans_1
+            if self._rots_cfg.corrupt:
+                batch["rotmats_t"] = rotmats_t_1
+            else:
+                if rotmats_1 is None:
+                    raise ValueError("Must provide rotmats_1 if not corrupting.")
+                batch["rotmats_t"] = rotmats_1
+            batch["t"] = torch.ones((num_batch, 1), device=self._device) * t_1
+            with torch.no_grad():
+                model_out = model(batch)
+            pred_trans_1 = model_out["pred_trans"]
+            pred_rotmats_1 = model_out["pred_rotmats"]
+            clean_traj.append(
+                (pred_trans_1.detach().cpu(), pred_rotmats_1.detach().cpu())
+            )
+            prot_traj.append((pred_trans_1, pred_rotmats_1))
+
+        if DEBUG:
+            return prot_traj, res_mask
 
         # Convert trajectories to atom37.
         atom37_traj = all_atom.transrot_to_atom37(prot_traj, res_mask)
