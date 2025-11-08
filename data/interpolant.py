@@ -697,7 +697,7 @@ class MeanFlowInterpolant:
 
             if self._sample_cfg.get("last_step", True):
                 r = t = torch.ones((num_batch, 1), device=self._device)
-                trans_r, rotmats_r = model(trans_t, rotmats_t, t, r, feats)
+                trans_r, rotmats_r = model(trans_r, rotmats_r, t, r, feats)
 
         # Convert the SE(3) sample to atom37.
         atom37 = all_atom.transrot_to_atom37([(trans_r, rotmats_r)], res_mask)
