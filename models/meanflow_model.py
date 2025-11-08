@@ -168,3 +168,133 @@ class MeanFlowModel(nn.Module):
             return self.avg_vel(trans_t, rotmat_t, t, r, feats)
 
         return torch.func.jvp(u, (trans_t, rotmat_t, t, r), tangent)
+
+
+def project_to_SO3(rotmats: torch.Tensor) -> torch.Tensor:
+    """
+    Project a tensor to the SO(3) manifold.
+    Shape:
+        rotmats: (B, 3, 3)
+    """
+    # Batched SVD-based projection to the nearest rotation matrix (Frobenius norm)
+    # Ensures det(R) = 1 by correcting reflections when needed.
+    assert (
+        rotmats.dim() == 3 and rotmats.size(-2) == 3 and rotmats.size(-1) == 3
+    ), "rotmats must be (B, 3, 3)"
+
+    # U @ Vh gives the orthogonal factor from polar decomposition
+    U, S, Vh = torch.linalg.svd(rotmats)
+    R = U @ Vh
+
+    # If det(R) < 0, flip the last axis to enforce det = 1
+    det_R = torch.det(R)
+    sign = torch.where(det_R >= 0, torch.ones_like(det_R), -torch.ones_like(det_R))
+    D = torch.diag_embed(
+        torch.stack([torch.ones_like(sign), torch.ones_like(sign), sign], dim=-1)
+    )
+
+    R_corrected = U @ D @ Vh
+    return R_corrected
+
+
+from data.so3_interpolant import SO3Interpolant
+
+
+class ToySO3MeanFlowModel(nn.Module):
+
+    def __init__(self, cfg):
+        super(ToySO3MeanFlowModel, self).__init__()
+        self.cfg = cfg
+
+        self.interpolant = None
+        self.num_blocks = cfg.num_blocks
+        self.emb_dim = cfg.emb_dim
+
+        self.layers = nn.ModuleList()
+        self.layers.append(
+            nn.Sequential(
+                nn.Linear(9 + 2, self.emb_dim),
+                nn.SiLU(),
+            )
+        )
+        for _ in range(self.num_blocks - 1):
+            self.layers.append(
+                nn.Sequential(
+                    nn.Linear(self.emb_dim + 2, self.emb_dim),
+                    nn.SiLU(),
+                )
+            )
+
+        self.predict_head = nn.Linear(self.emb_dim, 9)
+
+    def forward(self, Rt, t, r):
+        """
+        Shape:
+            Rt: (B, 3, 3)
+            t: (B,)
+            r: (B,)
+        """
+        x = Rt.reshape(-1, 9)
+        for layer in self.layers:
+            x = torch.cat([x, t[..., None], r[..., None]], dim=-1)
+            x = layer(x)
+        x = self.predict_head(x).view(Rt.shape)
+        return project_to_SO3(x)
+
+    def set_interpolant(self, interpolant: SO3Interpolant):
+        self.interpolant = interpolant
+
+    def avg_vel(self, Rt, t, r):
+        R1 = self(Rt, t, r)
+
+        if self.cfg.get("cond_vel_parameterization", True):
+            rot_vf = self.interpolant.cond_vf(t, Rt, R1)
+        else:
+            rot_vf = calc_rot_vf(Rt, R1)
+
+        return rot_vf
+
+    def forward_flow(self, Rt, t, r):
+        rot_vf = self.avg_vel(Rt, t, r)
+        Rr = exp(Rt, (r - t)[..., None] * rot_vf)
+        return Rr
+
+    def jvp_avg_vel(self, Rt, t, r, tangent):
+        """
+        tangent: (d_R, d_t, d_r)
+        """
+        return torch.func.jvp(self.avg_vel, (Rt, t, r), tangent)
+
+    @torch.no_grad()
+    def sample(self, x0, num_timesteps=100, verbose=False, return_traj=False):
+        ts = torch.linspace(0.01, 1.0, num_timesteps)
+        t1 = ts[0]
+        traj = [x0]
+        num_batch = x0.shape[0]
+        device = x0.device
+
+        for i, t2 in enumerate(ts[1:]):
+            if verbose:  # and i % 1 == 0:
+                print(f"{i=}, t={t1.item():.2f}")
+
+            xt = traj[-1]
+            r = t = torch.ones((num_batch,), device=device) * t1
+            d_t = t2 - t1
+
+            v_rot = self.avg_vel(xt, t, r)
+
+            # Take reverse step
+            xt = self.interpolant.euler_step(d_t, xt, v_rot)
+
+            traj.append(xt)
+            t1 = t2
+
+        if return_traj:
+            return traj
+        else:
+            return traj[-1]
+
+    def one_step_sample(self, x0):
+        t = torch.zeros((x0.shape[0],), device=x0.device, dtype=torch.float32)
+        r = torch.ones((x0.shape[0],), device=x0.device, dtype=torch.float32)
+        return self.forward_flow(x0, t, r)

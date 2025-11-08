@@ -132,10 +132,10 @@ def length_first_then_midpoint_sample(
 
 
 def create_time_sampler(cfg) -> Callable[[int, torch.device], Tensor]:
-    if cfg.type == "uniform":
+    if cfg.get("type", None) == "uniform":
         sample_fn = partial(uniform_sample, min_t=cfg.min_t)
 
-    elif cfg.type == "lognorm":
+    elif cfg.get("type", None) == "lognorm":
         sample_fn = partial(
             logit_norm_sample, mu=cfg.mu, sigma=cfg.sigma, min_t=cfg.min_t
         )
