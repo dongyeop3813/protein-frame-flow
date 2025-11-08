@@ -413,9 +413,7 @@ class SplitMeanFlowModule(LightningModule):
                 )
             raise e
 
-        batch_losses = self.model_step(noisy_batch)
         num_batch = batch_losses["fm_trans_loss"].shape[0]
-
         total_losses = {k: torch.mean(v) for k, v in batch_losses.items()}
         for k, v in total_losses.items():
             self._log_scalar(f"train/{k}", v, prog_bar=False, batch_size=num_batch)
