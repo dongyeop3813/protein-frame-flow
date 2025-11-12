@@ -173,10 +173,8 @@ class SplitMeanFlowModule(LightningModuleWrapper):
 
     def bb_loss(self, batch, loss_mask, pred_bb_atoms, gt_bb_atoms):
         loss_denom = torch.sum(loss_mask, dim=-1) * 3
-        norm_scale = torch.clamp(1 - batch["t"][..., None, None], min=1e-1)
-
-        gt_bb_atoms *= self.training_cfg.bb_atom_scale / norm_scale
-        pred_bb_atoms *= self.training_cfg.bb_atom_scale / norm_scale
+        gt_bb_atoms *= self.training_cfg.bb_atom_scale
+        pred_bb_atoms *= self.training_cfg.bb_atom_scale
         bb_atom_loss = torch.sum(
             (gt_bb_atoms - pred_bb_atoms) ** 2 * loss_mask[..., None, None],
             dim=(-1, -2, -3),
@@ -198,19 +196,13 @@ class SplitMeanFlowModule(LightningModuleWrapper):
         )
 
         # Loss mask for the pairwise distance loss.
-        flat_loss_mask = torch.tile(loss_mask[:, :, None], (1, 1, 3))
-        flat_loss_mask = flat_loss_mask.reshape([num_batch, num_res * 3])
-        flat_res_mask = torch.tile(loss_mask[:, :, None], (1, 1, 3))
-        flat_res_mask = flat_res_mask.reshape([num_batch, num_res * 3])
-
-        gt_pair_dists = gt_pair_dists * flat_loss_mask[..., None]
-        pred_pair_dists = pred_pair_dists * flat_loss_mask[..., None]
-        pair_dist_mask = flat_loss_mask[..., None] * flat_res_mask[:, None, :]
-
+        # gt_pair_dists, pred_pair_dists: [B, 3 * N, 3 * N]
+        # Only consider local loss with gt_pair_dists < 0.6 nm.
+        local_loss_mask = gt_pair_dists < 0.6
         dist_mat_loss = torch.sum(
-            (gt_pair_dists - pred_pair_dists) ** 2 * pair_dist_mask, dim=(1, 2)
+            (gt_pair_dists - pred_pair_dists) ** 2 * local_loss_mask, dim=(1, 2)
         )
-        dist_mat_loss /= torch.sum(pair_dist_mask, dim=(1, 2)) + 1
+        dist_mat_loss /= torch.sum(local_loss_mask, dim=(1, 2)) + 1
 
         if torch.any(torch.isnan(dist_mat_loss)):
             raise ValueError("NaN loss encountered in pair_loss")
