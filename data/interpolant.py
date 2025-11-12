@@ -717,57 +717,55 @@ class SplitMeanFlowInterpolant(MeanFlowInterpolant):
         return t * (1 - 2 * self._cfg.min_t) + self._cfg.min_t
 
     def corrupt_batch(self, batch):
-        noisy_batch = copy.deepcopy(batch)
+        self.set_device(batch["res_mask"].device)
 
-        # [B, N, 3]
+        # trans_1: [B, N, 3]
+        # rotmats_1: [B, N, 3, 3]
         trans_1 = batch["trans_1"]  # Angstrom
-
-        # [B, N, 3, 3]
         rotmats_1 = batch["rotmats_1"]
 
-        # [B, N]
+        # shape: [B, N]
         res_mask = batch["res_mask"]
         diffuse_mask = batch["diffuse_mask"]
         num_batch, _ = diffuse_mask.shape
 
-        # [B, 1]
+        # shape: [B, 1]
         t, s, r = self.sample_t_s_r(num_batch)
         t, s, r = t[:, None], s[:, None], r[:, None]
-        noisy_batch["so3_t"] = t
-        noisy_batch["r3_t"] = t
-        noisy_batch["t"] = t
-        noisy_batch["s"] = s
-        noisy_batch["r"] = r
+        batch["t"] = t
+        batch["s"] = s
+        batch["r"] = r
 
         if self._cfg.flow_matching_use_new_t:
-            noisy_batch["flow_matching_t"] = self.sample_t(num_batch)[:, None]
+            batch["flow_matching_t"] = self.sample_t(num_batch)[:, None]
         else:
-            noisy_batch["flow_matching_t"] = s
+            batch["flow_matching_t"] = s
 
         # Apply corruptions for semigroup loss.
         trans_t = self._corrupt_trans(trans_1, t, res_mask, diffuse_mask)
         if torch.any(torch.isnan(trans_t)):
             raise ValueError("NaN in trans_t during corruption")
-        noisy_batch["trans_t"] = trans_t
+        batch["trans_t"] = trans_t
 
         rotmats_t = self._corrupt_rotmats(rotmats_1, t, res_mask, diffuse_mask)
         if torch.any(torch.isnan(rotmats_t)):
             raise ValueError("NaN in rotmats_t during corruption")
-        noisy_batch["rotmats_t"] = rotmats_t
+        batch["rotmats_t"] = rotmats_t
 
         # Apply corruptions for flow matching.
         trans_t_fm = self._corrupt_trans(
-            trans_1, noisy_batch["flow_matching_t"], res_mask, diffuse_mask
+            trans_1, batch["flow_matching_t"], res_mask, diffuse_mask
         )
         if torch.any(torch.isnan(trans_t_fm)):
             raise ValueError("NaN in trans_t_fm during corruption")
-        noisy_batch["trans_t_fm"] = trans_t_fm
+        batch["trans_t_fm"] = trans_t_fm
 
         rotmats_t_fm = self._corrupt_rotmats(
-            rotmats_1, noisy_batch["flow_matching_t"], res_mask, diffuse_mask
+            rotmats_1, batch["flow_matching_t"], res_mask, diffuse_mask
         )
+
         if torch.any(torch.isnan(rotmats_t_fm)):
             raise ValueError("NaN in rotmats_t_fm during corruption")
-        noisy_batch["rotmats_t_fm"] = rotmats_t_fm
+        batch["rotmats_t_fm"] = rotmats_t_fm
 
-        return noisy_batch
+        return

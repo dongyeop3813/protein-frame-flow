@@ -12,8 +12,8 @@ data:
   dataset: scope
 
   loader:
-    num_workers: 8
-    prefetch_factor: 20
+    num_workers: 4
+    prefetch_factor: 10
 
   sampler:
     # Setting for 48GB GPUs
@@ -76,6 +76,11 @@ experiment:
     rotation_loss_weight: 5.0
     semigroup_loss_weight: 4.0
     flow_matching_loss_weight: 1.0
+    use_pair_dist_loss: False
+    use_bb_loss: False
+    pair_dist_loss_weight: 0.0
+    bb_loss_weight: 0.0
+    t_pass: 0.5
   wandb:
     name: semiMF_${data.task}_${data.dataset}
     project: se3-SemiMF-full

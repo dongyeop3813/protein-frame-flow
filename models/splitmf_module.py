@@ -1,33 +1,24 @@
-from typing import Any
+from typing import Any, Dict
 import torch
-import time
 import os
-import random
 import wandb
-import numpy as np
 import pandas as pd
-import logging
-import torch.distributed as dist
-from pytorch_lightning import LightningModule
-from pytorch_lightning.utilities import grad_norm
+from models.lightning_wrapper import LightningModuleWrapper
 from analysis import metrics
 from analysis import utils as au
 from models.meanflow_model import MeanFlowModel
 from models import utils as mu
 from data.interpolant import SplitMeanFlowInterpolant
-from data import utils as du
 from data import all_atom
 from data import so3_utils
 from data import residue_constants
-from experiments import utils as eu
 from pytorch_lightning.loggers.wandb import WandbLogger
 
 
-class SplitMeanFlowModule(LightningModule):
+class SplitMeanFlowModule(LightningModuleWrapper):
 
     def __init__(self, cfg):
         super().__init__()
-        self._print_logger = logging.getLogger(__name__)
         self._exp_cfg = cfg.experiment
         self._model_cfg = cfg.model
         self._data_cfg = cfg.data
@@ -38,7 +29,6 @@ class SplitMeanFlowModule(LightningModule):
 
         # Set-up interpolant
         self.interpolant = SplitMeanFlowInterpolant(cfg.interpolant)
-
         self.model.set_interpolant(self.interpolant)
 
         self.validation_epoch_metrics = []
@@ -47,68 +37,105 @@ class SplitMeanFlowModule(LightningModule):
         self.validation_epoch_one_step_samples = []
         self.save_hyperparameters()
 
-        self._checkpoint_dir = None
-        self._inference_dir = None
+    def training_step(self, batch: Any):
+        timer = self.make_timer()
 
-    @property
-    def checkpoint_dir(self):
-        if self._checkpoint_dir is None:
-            if dist.is_initialized():
-                if dist.get_rank() == 0:
-                    checkpoint_dir = [self._exp_cfg.checkpointer.dirpath]
-                else:
-                    checkpoint_dir = [None]
-                dist.broadcast_object_list(checkpoint_dir, src=0)
-                checkpoint_dir = checkpoint_dir[0]
-            else:
-                checkpoint_dir = self._exp_cfg.checkpointer.dirpath
-            self._checkpoint_dir = checkpoint_dir
-            os.makedirs(self._checkpoint_dir, exist_ok=True)
-        return self._checkpoint_dir
+        # Corrupt the batch for semigroup and flow matching losses.
+        self.interpolant.corrupt_batch(batch)
 
-    @property
-    def inference_dir(self):
-        if self._inference_dir is None:
-            if dist.is_initialized():
-                if dist.get_rank() == 0:
-                    inference_dir = [self._exp_cfg.inference_dir]
-                else:
-                    inference_dir = [None]
-                dist.broadcast_object_list(inference_dir, src=0)
-                inference_dir = inference_dir[0]
-            else:
-                inference_dir = self._exp_cfg.inference_dir
-            self._inference_dir = inference_dir
-            os.makedirs(self._inference_dir, exist_ok=True)
-        return self._inference_dir
+        # Log the batch and model state for debugging if NaN ValueError is encountered.
+        try:
+            batch_losses = self.model_step(batch)
+        except Exception as e:
+            if isinstance(e, ValueError) and ("NaN" in str(e) or "nan" in str(e)):
+                self.log_on_exception(batch)
+            raise e
 
-    def on_train_start(self):
-        self._epoch_start_time = time.time()
+        num_batch = batch_losses["fm_trans_loss"].shape[0]
+        self.log_loss(batch, batch_losses)
 
-    def on_train_epoch_end(self):
-        epoch_time = (time.time() - self._epoch_start_time) / 60.0
-        self.log(
-            "train/epoch_time_minutes",
-            epoch_time,
-            on_step=False,
-            on_epoch=True,
+        # Log training throughput
+        self.log_scalar(
+            "train/length",
+            batch["res_mask"].shape[1],
             prog_bar=False,
+            batch_size=num_batch,
         )
-        self._epoch_start_time = time.time()
+        self.log_scalar("train/batch_size", num_batch, prog_bar=False)
+        self.log_scalar("train/examples_per_second", num_batch / timer.second())
 
-    def flow_matching_loss(self, trans_t, rot_t, trans_1, rot_1, t, loss_mask, feats):
-        # Conditional velocity fields
-        # Here, v_rot is a rotation vector.
+        # This is the final training objective.
+        train_loss = batch_losses["split_meanflow_loss"].mean()
+        return train_loss
+
+    def model_step(self, batch: Any):
+        loss_mask = batch["res_mask"] * batch["diffuse_mask"]
+        if torch.any(torch.sum(loss_mask, dim=-1) < 1):
+            raise ValueError("Empty batch encountered")
+
+        # Flow matching loss.
+        fm_losses, pred_x1 = self.flow_matching_loss(batch, loss_mask)
+
+        aux_loss = torch.zeros_like(fm_losses["fm_loss"])
+
+        # Auxiliary losses (backbone atom and pairwise distance).
+        if self.training_cfg.use_bb_loss:
+            bb_atom_loss = self.bb_loss(batch, loss_mask, pred_x1)
+            bb_atom_loss *= self.training_cfg.bb_loss_weight
+            aux_loss += bb_atom_loss
+        else:
+            bb_atom_loss = torch.zeros_like(aux_loss)
+
+        if self.training_cfg.use_pair_dist_loss:
+            pair_dist_loss = self.pair_loss(batch, loss_mask, pred_x1)
+            pair_dist_loss *= self.training_cfg.pair_dist_loss_weight
+            aux_loss += pair_dist_loss
+        else:
+            pair_dist_loss = torch.zeros_like(aux_loss)
+
+        # Aux loss is only applied when t > t_pass.
+        aux_loss *= batch["flow_matching_t"].squeeze(-1) > self.training_cfg.t_pass
+
+        # Semigroup loss.
+        sg_losses = self.semigroup_loss(batch, loss_mask)
+
+        unweighted_loss = (
+            self.training_cfg.flow_matching_loss_weight * fm_losses["fm_loss"]
+            + self.training_cfg.semigroup_loss_weight * sg_losses["semigroup_loss"]
+        )
+
+        # Adaptive loss weighting.
+        loss = weighted_loss(unweighted_loss, self.training_cfg.loss_p) + aux_loss
+
+        return {
+            **fm_losses,
+            **sg_losses,
+            "bb_atom_loss": bb_atom_loss,
+            "pair_dist_loss": pair_dist_loss,
+            "unweighted_loss": unweighted_loss,
+            "split_meanflow_loss": loss,
+        }
+
+    def flow_matching_loss(self, batch, loss_mask):
+        trans_t = batch["trans_t_fm"]
+        rot_t = batch["rotmats_t_fm"]
+        trans_1 = batch["trans_1"]
+        rot_1 = batch["rotmats_1"]
+        t = batch["flow_matching_t"]
         loss_denom = torch.sum(loss_mask, dim=-1) * 3
 
+        # Conditional velocity fields
+        # Here, v_rot is a rotation vector.
         one_minus_t = torch.clamp(1 - t, min=1e-1)[..., None]
         v_trans = (trans_1 - trans_t) / one_minus_t
         v_rot = self.interpolant.rots_cond_vf(t, rot_t, rot_1)
         if torch.any(torch.isnan(v_rot)):
             raise ValueError("NaN encountered in v_rot")
 
-        # Flow matching loss.
-        u_trans_t, u_rot_t = self.model.avg_vel(trans_t, rot_t, t, t, feats)
+        # Model output predictions
+        u_trans_t, u_rot_t, pred_x1 = self.model.avg_vel(
+            trans_t, rot_t, t, t, batch, return_model_output=True
+        )
 
         # Flow matching on translation.
         trans_loss = torch.sum(
@@ -124,30 +151,86 @@ class SplitMeanFlowModule(LightningModule):
         trans_loss /= loss_denom
         rot_loss /= loss_denom
 
-        return trans_loss, rot_loss
+        weighted_trans_loss = trans_loss * self.training_cfg.translation_loss_weight
+        weighted_rot_loss = rot_loss * self.training_cfg.rotation_loss_weight
+        fm_loss = weighted_trans_loss + weighted_rot_loss
+        if torch.any(torch.isnan(fm_loss)):
+            raise ValueError("NaN loss encountered")
 
-    def semigroup_loss(self, trans_t, rot_t, trans_r, rot_r, t, r, loss_mask, feats):
+        loss_dict = {
+            "fm_trans_loss": trans_loss,
+            "fm_rot_loss": rot_loss,
+            "weighted_fm_trans_loss": weighted_trans_loss,
+            "weighted_fm_rot_loss": weighted_rot_loss,
+            "fm_loss": fm_loss,
+        }
+
+        return loss_dict, pred_x1
+
+    def bb_loss(self, batch, loss_mask, pred_x1):
         loss_denom = torch.sum(loss_mask, dim=-1) * 3
 
-        if self._exp_cfg.training.semigroup_loss_on_velocity:
+        # Obtain backbone atoms from the model output / data.
+        pred_bb_atoms = all_atom.to_atom37(*pred_x1)[:, :, :3]
+        gt_bb_atoms = all_atom.to_atom37(batch["trans_1"], batch["rotmats_1"])[:, :, :3]
+
+        norm_scale = torch.clamp(1 - batch["t"][..., None], min=1e-1)
+
+        # Calculate the backbone atom loss.
+        gt_bb_atoms *= self.training_cfg.bb_atom_scale / norm_scale
+        pred_bb_atoms *= self.training_cfg.bb_atom_scale / norm_scale
+        bb_atom_loss = torch.sum(
+            (gt_bb_atoms - pred_bb_atoms) ** 2 * loss_mask[..., None, None],
+            dim=(-1, -2, -3),
+        )
+
+        # Normalize by the number of residues.
+        bb_atom_loss /= loss_denom
+        return bb_atom_loss
+
+    def pair_loss(self, gt_pair_dists, pred_pair_dists, loss_mask):
+        return (
+            torch.sum(
+                (gt_pair_dists - pred_pair_dists) ** 2 * loss_mask[..., None],
+                dim=(-1, -2),
+            )
+            / torch.sum(loss_mask, dim=-1)
+            * 3
+        )
+
+    def semigroup_loss(self, batch, loss_mask):
+        loss_denom = torch.sum(loss_mask, dim=-1) * 3
+
+        # Estimate the xr from the model.
+        trans_t = batch["trans_t"]
+        rot_t = batch["rotmats_t"]
+        t = batch["t"]
+        s = batch["s"]
+        r = batch["r"]
+
+        with torch.no_grad():
+            hat_xs = self.model.forward_flow(trans_t, rot_t, t, s, batch)
+            hat_xr = self.model.forward_flow(*hat_xs, s, r, batch)
+            trans_r, rot_r = hat_xr
+
+        # Calculate the semigroup loss.
+        if self.training_cfg.semigroup_loss_on_velocity:
             r_minus_t = torch.clamp(r - t, min=1e-4)[..., None]
             u_trans_tgt = (trans_r - trans_t) / r_minus_t
             u_rot_tgt = so3_utils.calc_rot_vf(rot_t, rot_r) / r_minus_t
 
-            u_trans, u_rot = self.model.avg_vel(trans_t, rot_t, t, r, feats)
+            u_trans, u_rot = self.model.avg_vel(trans_t, rot_t, t, r, batch)
 
-            # Semigroup loss on translation.
             trans_loss = torch.sum(
                 ((u_trans - u_trans_tgt) * loss_mask[..., None]) ** 2, dim=(-1, -2)
             )
 
-            # Semigroup loss on rotation.
             rot_loss = torch.sum(
                 ((u_rot - u_rot_tgt) * loss_mask[..., None]) ** 2, dim=(-1, -2)
             )
         else:
             hat_trans_r, hat_rot_r = self.model.forward_flow(
-                trans_t, rot_t, t, r, feats
+                trans_t, rot_t, t, r, batch
             )
 
             trans_loss = torch.sum(
@@ -162,70 +245,53 @@ class SplitMeanFlowModule(LightningModule):
         trans_loss /= loss_denom
         rot_loss /= loss_denom
 
-        return trans_loss, rot_loss
-
-    def model_step(self, noisy_batch: Any):
-        training_cfg = self._exp_cfg.training
-        loss_mask = noisy_batch["res_mask"] * noisy_batch["diffuse_mask"]
-        if torch.any(torch.sum(loss_mask, dim=-1) < 1):
-            raise ValueError("Empty batch encountered")
-
-        # Extract sample for flow matching loss.
-        x1 = (noisy_batch["trans_1"], noisy_batch["rotmats_1"])
-        t_fm = noisy_batch["flow_matching_t"]
-        xt_fm = (noisy_batch["trans_t_fm"], noisy_batch["rotmats_t_fm"])
-
-        feat = noisy_batch
-        trans_loss, rot_loss = self.flow_matching_loss(
-            *xt_fm, *x1, t_fm, loss_mask, feat
-        )
-
-        weighted_trans_loss = trans_loss * training_cfg.translation_loss_weight
-        weighted_rot_loss = rot_loss * training_cfg.rotation_loss_weight
-        fm_loss = weighted_trans_loss + weighted_rot_loss
-        if torch.any(torch.isnan(fm_loss)):
-            raise ValueError("NaN loss encountered")
-
-        # Extract sample for semigroup loss.
-        xt = (noisy_batch["trans_t"], noisy_batch["rotmats_t"])
-
-        assert (noisy_batch["r3_t"] == noisy_batch["so3_t"]).all()
-        t = noisy_batch["so3_t"]
-        s = noisy_batch["s"]
-        r = noisy_batch["r"]
-
-        # Algebraic consistency.
-        with torch.no_grad():
-            hat_xs = self.model.forward_flow(*xt, t, s, feat)
-            hat_xr = self.model.forward_flow(*hat_xs, s, r, feat)
-
-        sg_trans_loss, sg_rot_loss = self.semigroup_loss(
-            *xt, *hat_xr, t, r, loss_mask, feat
-        )
-        weighted_sg_trans_loss = sg_trans_loss * training_cfg.translation_loss_weight
-        weighted_sg_rot_loss = sg_rot_loss * training_cfg.rotation_loss_weight
-        semigroup_loss = weighted_sg_trans_loss + weighted_sg_rot_loss
+        weighted_trans_loss = trans_loss * self.training_cfg.translation_loss_weight
+        weighted_rot_loss = rot_loss * self.training_cfg.rotation_loss_weight
+        semigroup_loss = weighted_trans_loss + weighted_rot_loss
         if torch.any(torch.isnan(semigroup_loss)):
             raise ValueError("NaN loss encountered")
 
-        unweighted_loss = (
-            training_cfg.flow_matching_loss_weight * fm_loss
-            + training_cfg.semigroup_loss_weight * semigroup_loss
-        )
-        loss = weighted_loss(unweighted_loss, training_cfg.loss_p)
         return {
-            "fm_trans_loss": trans_loss,
-            "fm_rot_loss": rot_loss,
-            "weighted_fm_trans_loss": weighted_trans_loss,
-            "weighted_fm_rot_loss": weighted_rot_loss,
-            "sg_trans_loss": sg_trans_loss,
-            "sg_rot_loss": sg_rot_loss,
-            "weighted_sg_trans_loss": weighted_sg_trans_loss,
-            "weighted_sg_rot_loss": weighted_sg_rot_loss,
+            "sg_trans_loss": trans_loss,
+            "sg_rot_loss": rot_loss,
+            "weighted_sg_trans_loss": weighted_trans_loss,
+            "weighted_sg_rot_loss": weighted_rot_loss,
             "semigroup_loss": semigroup_loss,
-            "unweighted_loss": unweighted_loss,
-            "split_meanflow_loss": loss,
         }
+
+    def log_loss(self, noisy_batch: Any, batch_losses: Dict[str, torch.Tensor]):
+        num_batch = batch_losses["fm_trans_loss"].shape[0]
+
+        total_losses = {k: torch.mean(v) for k, v in batch_losses.items()}
+        for k, v in total_losses.items():
+            self.log_scalar(f"train/{k}", v, prog_bar=False, batch_size=num_batch)
+
+        # Losses to track. Stratified across t.
+        for loss_name, batch_loss in batch_losses.items():
+            if "fm" in loss_name:
+                batch_t = noisy_batch["flow_matching_t"]
+                t_label = "t"
+            elif "sg" in loss_name:
+                batch_t = noisy_batch["r"] - noisy_batch["t"]
+                t_label = "r-t"
+            else:
+                continue
+
+            stratified_losses = mu.t_stratified_loss(
+                batch_t, batch_loss, loss_name=loss_name, t_label=t_label
+            )
+
+            for k, v in stratified_losses.items():
+                self.log_scalar(
+                    f"stratified_loss/{k}",
+                    v,
+                    prog_bar=False,
+                    batch_size=num_batch,
+                )
+
+        self.log_scalar(
+            "train/loss", total_losses["split_meanflow_loss"], batch_size=num_batch
+        )
 
     def validation_step(self, batch: Any, batch_idx: int):
         res_mask = batch["res_mask"]
@@ -320,7 +386,7 @@ class SplitMeanFlowModule(LightningModule):
             self.validation_epoch_samples.clear()
         val_epoch_metrics = pd.concat(self.validation_epoch_metrics)
         for metric_name, metric_val in val_epoch_metrics.mean().to_dict().items():
-            self._log_scalar(
+            self.log_scalar(
                 f"valid/{metric_name}",
                 metric_val,
                 on_step=False,
@@ -339,7 +405,7 @@ class SplitMeanFlowModule(LightningModule):
             self.validation_epoch_one_step_samples.clear()
         val_epoch_metrics = pd.concat(self.validation_epoch_one_step_metrics)
         for metric_name, metric_val in val_epoch_metrics.mean().to_dict().items():
-            self._log_scalar(
+            self.log_scalar(
                 f"valid_one_step/{metric_name}",
                 metric_val,
                 on_step=False,
@@ -348,203 +414,6 @@ class SplitMeanFlowModule(LightningModule):
                 batch_size=len(val_epoch_metrics),
             )
         self.validation_epoch_one_step_metrics.clear()
-
-    def _log_scalar(
-        self,
-        key,
-        value,
-        on_step=True,
-        on_epoch=False,
-        prog_bar=True,
-        batch_size=None,
-        sync_dist=False,
-        rank_zero_only=True,
-    ):
-        if sync_dist and rank_zero_only:
-            raise ValueError("Unable to sync dist when rank_zero_only=True")
-        self.log(
-            key,
-            value,
-            on_step=on_step,
-            on_epoch=on_epoch,
-            prog_bar=prog_bar,
-            batch_size=batch_size,
-            sync_dist=sync_dist,
-            rank_zero_only=rank_zero_only,
-        )
-
-    def training_step(self, batch: Any, stage: int):
-        step_start_time = time.time()
-        self.interpolant.set_device(batch["res_mask"].device)
-        noisy_batch = self.interpolant.corrupt_batch(batch)
-
-        # No self-conditioning, no auxiliary losses.
-        # Log the batch and model state for debugging if NaN ValueError is encountered.
-        try:
-            batch_losses = self.model_step(noisy_batch)
-        except Exception as e:
-            if isinstance(e, ValueError) and ("NaN" in str(e) or "nan" in str(e)):
-                debug_dir = os.path.join(self.checkpoint_dir, "debug")
-                os.makedirs(debug_dir, exist_ok=True)
-                prefix = f"step_{int(self.global_step)}"
-
-                # Try Lightning checkpoint (includes optimizer/scheduler states)
-                ckpt_path = os.path.join(debug_dir, f"{prefix}_trainer.ckpt")
-                self.trainer.save_checkpoint(ckpt_path)
-
-                # Serialize input batch and model state for debugging
-                def _to_cpu(obj):
-                    if torch.is_tensor(obj):
-                        return obj.detach().cpu()
-                    if isinstance(obj, dict):
-                        return {k: _to_cpu(v) for k, v in obj.items()}
-                    if isinstance(obj, (list, tuple)):
-                        typ = type(obj)
-                        return typ(_to_cpu(x) for x in obj)
-                    return obj
-
-                noisy_batch_cpu = _to_cpu(noisy_batch)
-                batch_path = os.path.join(debug_dir, f"{prefix}_noisy_batch.pt")
-                model_path = os.path.join(debug_dir, f"{prefix}_model_state.pt")
-                torch.save(noisy_batch_cpu, batch_path)
-                torch.save(self.model.state_dict(), model_path)
-                self._print_logger.error(
-                    f"NaN ValueError encountered. Saved artifacts: batch={batch_path}, model={model_path}"
-                )
-            raise e
-
-        num_batch = batch_losses["fm_trans_loss"].shape[0]
-        total_losses = {k: torch.mean(v) for k, v in batch_losses.items()}
-        for k, v in total_losses.items():
-            self._log_scalar(f"train/{k}", v, prog_bar=False, batch_size=num_batch)
-
-        # Losses to track. Stratified across t.
-        for loss_name, batch_loss in batch_losses.items():
-            if "fm" in loss_name:
-                batch_t = noisy_batch["flow_matching_t"]
-                t_label = "t"
-            elif "sg" in loss_name:
-                batch_t = noisy_batch["r"] - noisy_batch["t"]
-                t_label = "r-t"
-            else:
-                continue
-
-            # Bin the loss by timestep.
-            stratified_losses = mu.t_stratified_loss(
-                batch_t, batch_loss, loss_name=loss_name, t_label=t_label
-            )
-
-            # Log the stratified losses.
-            for k, v in stratified_losses.items():
-                self._log_scalar(
-                    f"stratified_loss/{k}",
-                    v,
-                    prog_bar=False,
-                    batch_size=num_batch,
-                )
-
-        # Training throughput
-        self._log_scalar(
-            "train/length",
-            batch["res_mask"].shape[1],
-            prog_bar=False,
-            batch_size=num_batch,
-        )
-        self._log_scalar("train/batch_size", num_batch, prog_bar=False)
-        step_time = time.time() - step_start_time
-        self._log_scalar("train/examples_per_second", num_batch / step_time)
-
-        # This is the final training objective.
-        train_loss = total_losses["split_meanflow_loss"]
-        self._log_scalar("train/loss", train_loss, batch_size=num_batch)
-        return train_loss
-
-    def configure_optimizers(self):
-        return torch.optim.AdamW(
-            params=self.model.parameters(), **self._exp_cfg.optimizer
-        )
-
-    def on_before_optimizer_step(self, optimizer):
-        # Compute grad norms and rename keys for cleaner logging
-        if self._exp_cfg.debug:
-            raw_norms = grad_norm(self.model, norm_type=2, group_separator="/")
-            if not raw_norms:
-                return
-            cleaned_norms = {}
-            for key, value in raw_norms.items():
-                if key.endswith("_total"):
-                    cleaned_norms["grad_norm/total"] = value
-                else:
-                    # Original key example: "grad_2.0_norm/<param_path>"
-                    suffix = key.split("/", 1)[1] if "/" in key else key
-                    cleaned_norms[f"grad_norm/layers/{suffix}"] = value
-            self.log_dict(cleaned_norms)
-
-    def predict_step(self, batch, batch_idx):
-        del batch_idx  # Unused
-        device = f"cuda:{torch.cuda.current_device()}"
-        interpolant = SplitMeanFlowInterpolant(self._infer_cfg.interpolant)
-        interpolant.set_device(device)
-
-        sample_ids = batch["sample_id"].squeeze().tolist()
-        sample_ids = [sample_ids] if isinstance(sample_ids, int) else sample_ids
-        num_batch = len(sample_ids)
-
-        if "diffuse_mask" in batch:  # motif-scaffolding
-            target = batch["target"][0]
-            trans_1 = batch["trans_1"]
-            rotmats_1 = batch["rotmats_1"]
-            diffuse_mask = batch["diffuse_mask"]
-            true_bb_pos = all_atom.atom37_from_trans_rot(
-                trans_1, rotmats_1, 1 - diffuse_mask
-            )
-            true_bb_pos = true_bb_pos[..., :3, :].reshape(-1, 3).cpu().numpy()
-            _, sample_length, _ = trans_1.shape
-            sample_dirs = [
-                os.path.join(self.inference_dir, target, f"sample_{str(sample_id)}")
-                for sample_id in sample_ids
-            ]
-        else:  # unconditional
-            sample_length = batch["num_res"].item()
-            true_bb_pos = None
-            sample_dirs = [
-                os.path.join(
-                    self.inference_dir,
-                    f"length_{sample_length}",
-                    f"sample_{str(sample_id)}",
-                )
-                for sample_id in sample_ids
-            ]
-            trans_1 = rotmats_1 = diffuse_mask = None
-            diffuse_mask = torch.ones(1, sample_length, device=device)
-
-        # Sample batch
-        atom37_traj, model_traj, _ = interpolant.sample(
-            num_batch,
-            sample_length,
-            self.model,
-            trans_1=trans_1,
-            rotmats_1=rotmats_1,
-            diffuse_mask=diffuse_mask,
-        )
-
-        bb_trajs = du.to_numpy(torch.stack(atom37_traj, dim=0).transpose(0, 1))
-        for i in range(num_batch):
-            sample_dir = sample_dirs[i]
-            bb_traj = bb_trajs[i]
-            os.makedirs(sample_dir, exist_ok=True)
-            if "aatype" in batch:
-                aatype = du.to_numpy(batch["aatype"].long())[0]
-            else:
-                aatype = np.zeros(sample_length, dtype=int)
-            _ = eu.save_traj(
-                bb_traj[-1],
-                bb_traj,
-                np.flip(du.to_numpy(torch.concat(model_traj, dim=0)), axis=0),
-                du.to_numpy(diffuse_mask)[0],
-                output_dir=sample_dir,
-                aatype=aatype,
-            )
 
 
 def weighted_loss(loss, p=0.0):
