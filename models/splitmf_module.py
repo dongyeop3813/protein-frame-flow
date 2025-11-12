@@ -174,7 +174,7 @@ class SplitMeanFlowModule(LightningModuleWrapper):
 
     def bb_loss(self, batch, loss_mask, pred_bb_atoms, gt_bb_atoms):
         loss_denom = torch.sum(loss_mask, dim=-1) * 3
-        norm_scale = torch.clamp(1 - batch["t"][..., None], min=1e-1)
+        norm_scale = torch.clamp(1 - batch["t"][..., None, None], min=1e-1)
 
         gt_bb_atoms *= self.training_cfg.bb_atom_scale / norm_scale
         pred_bb_atoms *= self.training_cfg.bb_atom_scale / norm_scale
