@@ -78,8 +78,9 @@ experiment:
     flow_matching_loss_weight: 1.0
     use_pair_dist_loss: False
     use_bb_loss: False
-    aux_loss_weight: 1.0
-    t_pass: 0.5
+    aux_loss_weight: 0.25
+    bb_atom_scale: 0.1
+    t_pass: 0.75
   wandb:
     name: semiMF_${data.task}_${data.dataset}
     project: se3-SemiMF-full
