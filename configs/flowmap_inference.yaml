@@ -1,0 +1,21 @@
+
+# Path to the Lightning checkpoint that will be loaded at runtime.
+ckpt_path: weights/pdb/published.ckpt
+
+# Module to instantiate for inference. Supported values:
+#   - meanflow: MeanFlowModule
+#   - splitmf: SplitMeanFlowModule
+module_type: splitmf
+
+seed: 123
+
+# Base directory where samples will be written.
+output_dir: ./inference_outputs/run_${now:%Y-%m-%d}_${now:%H-%M-%S}
+
+one_step_evaluation: true
+
+samples:
+  min_length: 60
+  max_length: 128
+  length_step: 1
+  samples_per_length: 10
