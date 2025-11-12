@@ -91,9 +91,7 @@ class SplitMeanFlowModule(LightningModuleWrapper):
             bb_atom_loss = torch.zeros_like(aux_loss)
 
         if self.training_cfg.use_pair_dist_loss:
-            pair_dist_loss = self.pair_loss(
-                batch, loss_mask, pred_bb_atoms, gt_bb_atoms
-            )
+            pair_dist_loss = self.pair_loss(loss_mask, pred_bb_atoms, gt_bb_atoms)
             aux_loss += pair_dist_loss
         else:
             pair_dist_loss = torch.zeros_like(aux_loss)
