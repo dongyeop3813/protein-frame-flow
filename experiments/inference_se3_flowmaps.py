@@ -95,7 +95,7 @@ class EvalRunner:
         if self.cfg.one_step_evaluation:
             samples = self.module.one_step_sample(num_batch, num_res)
         else:
-            raise NotImplementedError("Only one-step evaluation is supported for now")
+            samples = self.module.multi_step_sample(num_batch, num_res)
 
         return samples
 

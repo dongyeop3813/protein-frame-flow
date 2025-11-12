@@ -318,25 +318,23 @@ class SplitMeanFlowModule(LightningModuleWrapper):
         samples = atom37.numpy()
         return samples
 
-    def validation_step(self, batch: Any, batch_idx: int):
-        res_mask = batch["res_mask"]
-        self.interpolant.set_device(res_mask.device)
-        num_batch, num_res = res_mask.shape
-        diffuse_mask = batch["diffuse_mask"]
-        csv_idx = batch["csv_idx"]
-
-        ####### Original validation code (with integration) #######
+    def multi_step_sample(self, num_batch, num_res):
         atom37_traj, _, _ = self.interpolant.sample(
             num_batch,
             num_res,
             self.model,
-            trans_1=batch["trans_1"],
-            rotmats_1=batch["rotmats_1"],
-            diffuse_mask=diffuse_mask,
-            chain_idx=batch["chain_idx"],
-            res_idx=batch["res_idx"],
         )
         samples = atom37_traj[-1].numpy()
+        return samples
+
+    def validation_step(self, batch: Any, batch_idx: int):
+        res_mask = batch["res_mask"]
+        num_batch, num_res = res_mask.shape
+        self.interpolant.set_device(res_mask.device)
+        csv_idx = batch["csv_idx"]
+
+        ####### Original validation code (with integration) #######
+        samples = self.multi_step_sample(num_batch, num_res)
         batch_metrics = []
         for i in range(num_batch):
             sample_dir = os.path.join(
