@@ -98,6 +98,7 @@ class SplitMeanFlowModule(LightningModuleWrapper):
 
         # Aux loss is only applied when t > t_pass.
         aux_loss *= batch["flow_matching_t"].squeeze(-1) > self.training_cfg.t_pass
+        aux_loss *= self.training_cfg.aux_loss_weight
 
         # Semigroup loss.
         sg_losses = self.semigroup_loss(batch, loss_mask)
@@ -311,6 +312,20 @@ class SplitMeanFlowModule(LightningModuleWrapper):
             "train/loss", total_losses["split_meanflow_loss"], batch_size=num_batch
         )
 
+    def one_step_sample(self, num_batch, num_res):
+        trans_0, rotmats_0 = self.interpolant.init_prior(num_batch, num_res)
+        atom37 = self.interpolant.forward_flow(
+            num_batch,
+            num_res,
+            self.model,
+            trans_t=trans_0,
+            rotmats_t=rotmats_0,
+            t=0.0,
+            r=1.0,
+        )
+        samples = atom37.numpy()
+        return samples
+
     def validation_step(self, batch: Any, batch_idx: int):
         res_mask = batch["res_mask"]
         self.interpolant.set_device(res_mask.device)
@@ -357,17 +372,7 @@ class SplitMeanFlowModule(LightningModuleWrapper):
         self.validation_epoch_metrics.append(batch_metrics)
 
         ####### One step validation code #######
-        trans_0, rotmats_0 = self.interpolant.init_prior(num_batch, num_res)
-        atom37 = self.interpolant.forward_flow(
-            num_batch,
-            num_res,
-            self.model,
-            trans_t=trans_0,
-            rotmats_t=rotmats_0,
-            t=0.0,
-            r=1.0,
-        )
-        samples = atom37.numpy()
+        samples = self.one_step_sample(num_batch, num_res)
         batch_metrics = []
         for i in range(num_batch):
             sample_dir = os.path.join(
