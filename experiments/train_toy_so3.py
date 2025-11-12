@@ -395,10 +395,13 @@ class ToySO3MeanFlowModule(ToySO3SplitMeanFlowModule):
 
         assert not (du_dt.isnan()).any()
 
-        hat_rot_r = so3_utils.exp(xt, (r - t)[..., None] * u)
-        u_tgt = (
-            (r - t)[..., None] * du_dt - so3_utils.d1_log(xt, hat_rot_r, v_rot)
-        ).detach()
+        if self._exp_cfg.training.get("GFM_MF_loss", False):
+            u_tgt = ((r - t)[..., None] * du_dt + v_rot).detach()
+        else:
+            hat_rot_r = so3_utils.exp(xt, (r - t)[..., None] * u)
+            u_tgt = (
+                (r - t)[..., None] * du_dt - so3_utils.d1_log(xt, hat_rot_r, v_rot)
+            ).detach()
 
         meanflow_loss = torch.sum((u - u_tgt) ** 2, dim=-1)
 
@@ -484,7 +487,7 @@ class ToySO3MeanFlowModule(ToySO3SplitMeanFlowModule):
         return train_loss
 
 
-def visualize_rotation(rotmat: torch.Tensor):
+def visualize_rotation(rotmat: torch.Tensor, mark_start: bool = False):
     # Plot the rotation matrix as axis map on S^2.
     # Convert the rotation matrix to axis-angle representation.
     # Scatter the axes u on the sphere and color the theta.
@@ -495,6 +498,7 @@ def visualize_rotation(rotmat: torch.Tensor):
 
     # Plot the axes on the sphere.
     from matplotlib import pyplot as plt
+    import numpy as np
 
     # Scatter the axes on the sphere.
     fig = plt.figure()
@@ -502,7 +506,70 @@ def visualize_rotation(rotmat: torch.Tensor):
     scatter = ax.scatter(
         axis[..., 0], axis[..., 1], axis[..., 2], c=angle, cmap="viridis"
     )
-    plt.colorbar(scatter, ax=ax)
+    scatter.set_clim(0, np.pi)
+
+    if mark_start:
+        ax.scatter(axis[0, ..., 0], axis[0, ..., 1], axis[0, ..., 2], c="red", s=100)
+
+    # Set colorbar to be smaller and minimize gap between plot and colorbar
+    cbar = plt.colorbar(scatter, ax=ax, fraction=0.025, pad=-0.08)
+    cbar.set_label("Rotation angle")
+
+    # Fix the aspect ratio and set a fixed view angle.
+    # ax.set_aspect("equal")
+    ax.set_xlim(-1, 1)
+    ax.set_ylim(-1, 1)
+    ax.set_zlim(-1, 1)
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_zlabel("Z")
+
+    # Draw a very faint gray unit sphere with meridians and parallels
+    contract_scale = 0.98
+
+    # u: azimuthal, v: polar
+    u = np.linspace(0, 2 * np.pi, 60)
+    v = np.linspace(0, np.pi, 30)
+    x = np.outer(np.cos(u), np.sin(v)) * contract_scale
+    y = np.outer(np.sin(u), np.sin(v)) * contract_scale
+    z = np.outer(np.ones_like(u), np.cos(v)) * contract_scale
+    # Plot the sphere
+    ax.plot_surface(
+        x,
+        y,
+        z,
+        rstride=2,
+        cstride=2,
+        color="gray",
+        edgecolor="lightgray",
+        linewidth=0.2,
+        alpha=0.001,  # very faint
+        zorder=0,
+    )
+    # Draw meridians and parallels
+    for phi in np.linspace(0, 2 * np.pi, 12, endpoint=False):  # Meridians
+        ax.plot(
+            np.cos(phi) * np.sin(v) * contract_scale,
+            np.sin(phi) * np.sin(v) * contract_scale,
+            np.cos(v) * contract_scale,
+            color="lightgray",
+            linewidth=0.5,
+            alpha=0.01,
+            zorder=1,
+        )
+    for theta in np.linspace(0, np.pi, 7)[1:-1]:  # Parallels (omit poles)
+        ax.plot(
+            np.cos(u) * np.sin(theta) * contract_scale,
+            np.sin(u) * np.sin(theta) * contract_scale,
+            np.ones_like(u) * np.cos(theta) * contract_scale,
+            color="lightgray",
+            linewidth=0.5,
+            alpha=0.01,
+            zorder=1,
+        )
+
+    ax.set_aspect("equal")
+    ax.axis("off")
 
     return fig
 
