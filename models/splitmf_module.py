@@ -79,16 +79,21 @@ class SplitMeanFlowModule(LightningModuleWrapper):
         aux_loss = torch.zeros_like(fm_losses["fm_loss"])
 
         # Auxiliary losses (backbone atom and pairwise distance).
+
+        # Obtain backbone atoms from the model output / data.
+        pred_bb_atoms = all_atom.to_atom37(*pred_x1)[:, :, :3]
+        gt_bb_atoms = all_atom.to_atom37(batch["trans_1"], batch["rotmats_1"])[:, :, :3]
+
         if self.training_cfg.use_bb_loss:
-            bb_atom_loss = self.bb_loss(batch, loss_mask, pred_x1)
-            bb_atom_loss *= self.training_cfg.bb_loss_weight
+            bb_atom_loss = self.bb_loss(batch, loss_mask, pred_bb_atoms, gt_bb_atoms)
             aux_loss += bb_atom_loss
         else:
             bb_atom_loss = torch.zeros_like(aux_loss)
 
         if self.training_cfg.use_pair_dist_loss:
-            pair_dist_loss = self.pair_loss(batch, loss_mask, pred_x1)
-            pair_dist_loss *= self.training_cfg.pair_dist_loss_weight
+            pair_dist_loss = self.pair_loss(
+                batch, loss_mask, pred_bb_atoms, gt_bb_atoms
+            )
             aux_loss += pair_dist_loss
         else:
             pair_dist_loss = torch.zeros_like(aux_loss)
@@ -167,16 +172,10 @@ class SplitMeanFlowModule(LightningModuleWrapper):
 
         return loss_dict, pred_x1
 
-    def bb_loss(self, batch, loss_mask, pred_x1):
+    def bb_loss(self, batch, loss_mask, pred_bb_atoms, gt_bb_atoms):
         loss_denom = torch.sum(loss_mask, dim=-1) * 3
-
-        # Obtain backbone atoms from the model output / data.
-        pred_bb_atoms = all_atom.to_atom37(*pred_x1)[:, :, :3]
-        gt_bb_atoms = all_atom.to_atom37(batch["trans_1"], batch["rotmats_1"])[:, :, :3]
-
         norm_scale = torch.clamp(1 - batch["t"][..., None], min=1e-1)
 
-        # Calculate the backbone atom loss.
         gt_bb_atoms *= self.training_cfg.bb_atom_scale / norm_scale
         pred_bb_atoms *= self.training_cfg.bb_atom_scale / norm_scale
         bb_atom_loss = torch.sum(
@@ -184,19 +183,40 @@ class SplitMeanFlowModule(LightningModuleWrapper):
             dim=(-1, -2, -3),
         )
 
-        # Normalize by the number of residues.
         bb_atom_loss /= loss_denom
+
         return bb_atom_loss
 
-    def pair_loss(self, gt_pair_dists, pred_pair_dists, loss_mask):
-        return (
-            torch.sum(
-                (gt_pair_dists - pred_pair_dists) ** 2 * loss_mask[..., None],
-                dim=(-1, -2),
-            )
-            / torch.sum(loss_mask, dim=-1)
-            * 3
+    def pair_loss(self, loss_mask, pred_bb_atoms, gt_bb_atoms):
+        num_batch, num_res = loss_mask.shape
+        gt_flat_atoms = gt_bb_atoms.reshape([num_batch, num_res * 3, 3])
+        gt_pair_dists = torch.linalg.norm(
+            gt_flat_atoms[:, :, None, :] - gt_flat_atoms[:, None, :, :], dim=-1
         )
+        pred_flat_atoms = pred_bb_atoms.reshape([num_batch, num_res * 3, 3])
+        pred_pair_dists = torch.linalg.norm(
+            pred_flat_atoms[:, :, None, :] - pred_flat_atoms[:, None, :, :], dim=-1
+        )
+
+        # Loss mask for the pairwise distance loss.
+        flat_loss_mask = torch.tile(loss_mask[:, :, None], (1, 1, 3))
+        flat_loss_mask = flat_loss_mask.reshape([num_batch, num_res * 3])
+        flat_res_mask = torch.tile(loss_mask[:, :, None], (1, 1, 3))
+        flat_res_mask = flat_res_mask.reshape([num_batch, num_res * 3])
+
+        gt_pair_dists = gt_pair_dists * flat_loss_mask[..., None]
+        pred_pair_dists = pred_pair_dists * flat_loss_mask[..., None]
+        pair_dist_mask = flat_loss_mask[..., None] * flat_res_mask[:, None, :]
+
+        dist_mat_loss = torch.sum(
+            (gt_pair_dists - pred_pair_dists) ** 2 * pair_dist_mask, dim=(1, 2)
+        )
+        dist_mat_loss /= torch.sum(pair_dist_mask, dim=(1, 2)) + 1
+
+        if torch.any(torch.isnan(dist_mat_loss)):
+            raise ValueError("NaN loss encountered in pair_loss")
+
+        return dist_mat_loss
 
     def semigroup_loss(self, batch, loss_mask):
         loss_denom = torch.sum(loss_mask, dim=-1) * 3
