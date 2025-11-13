@@ -41,8 +41,12 @@ class EvalRunner:
         self.rng = np.random.default_rng(cfg.seed)
 
         # Set-up output directory
-        os.makedirs(cfg.output_dir, exist_ok=True)
-        self.output_dir = cfg.output_dir
+        if cfg.name is not None:
+            self.output_dir = os.path.join(cfg.output_dir, cfg.name)
+        else:
+            datetime_str = f"run_{time.strftime('%Y-%m-%d_%H-%M-%S')}"
+            self.output_dir = os.path.join(cfg.output_dir, datetime_str)
+        os.makedirs(self.output_dir, exist_ok=True)
 
         # Read checkpoint and initialize module.
         if cfg.module_type == "splitmf":
@@ -84,7 +88,10 @@ class EvalRunner:
             length_dir = os.path.join(self.output_dir, f"length_{length}")
             os.makedirs(length_dir, exist_ok=True)
             for sample_id in range(num_batch):
-                pdb_path = os.path.join(length_dir, f"sample_{sample_id}.pdb")
+                sample_dir = os.path.join(length_dir, f"sample_{sample_id}")
+                os.makedirs(sample_dir, exist_ok=True)
+                pdb_path = os.path.join(sample_dir, "sample.pdb")
+
                 final_pos = samples[sample_id]
                 au.write_prot_to_pdb(final_pos, pdb_path, no_indexing=True)
 

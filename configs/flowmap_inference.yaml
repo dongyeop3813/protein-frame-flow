@@ -10,7 +10,8 @@ module_type: splitmf
 seed: 123
 
 # Base directory where samples will be written.
-output_dir: ./inference_outputs/run_${now:%Y-%m-%d}_${now:%H-%M-%S}
+output_dir: ./inference_outputs
+name: null
 
 one_step_evaluation: true
 
