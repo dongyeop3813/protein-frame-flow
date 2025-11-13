@@ -162,6 +162,21 @@ class MeanFlowModel(nn.Module):
 
         return trans_r, rotmats_r
 
+    def inference_avg_vel(self, trans_t, rotmat_t, t, r, feats):
+        trans_1, rotmat_1 = self(trans_t, rotmat_t, t, r, feats)
+        trans_vf = (trans_1 - trans_t) / torch.clamp(1 - t, min=1e-1)[..., None]
+        rot_vf = calc_rot_vf(rotmat_t, rotmat_1)
+        rot_vf *= self.interpolant._rots_cfg.exp_rate
+        return trans_vf, rot_vf
+
+    def inference_forward_flow(self, trans_t, rotmat_t, t, r, feats):
+        trans_vf, rot_vf = self.inference_avg_vel(trans_t, rotmat_t, t, r, feats)
+
+        trans_r = trans_t + trans_vf * (r - t)[..., None]
+        rotmats_r = exp(rotmat_t, (r - t)[..., None] * rot_vf)
+
+        return trans_r, rotmats_r
+
     def jvp_avg_vel(self, trans_t, rotmat_t, t, r, feats, tangent):
         """
         tangent: (d_trans, d_rot, d_t, d_r)

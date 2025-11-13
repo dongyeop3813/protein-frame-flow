@@ -101,7 +101,10 @@ class SplitMeanFlowModule(LightningModuleWrapper):
         aux_loss *= self.training_cfg.aux_loss_weight
 
         # Semigroup loss.
-        sg_losses = self.semigroup_loss(batch, loss_mask)
+        if self.training_cfg.inference_sg_loss:
+            sg_losses = self.semigroup_inference_loss(batch, loss_mask)
+        else:
+            sg_losses = self.semigroup_loss(batch, loss_mask)
 
         unweighted_loss = (
             self.training_cfg.flow_matching_loss_weight * fm_losses["fm_loss"]
@@ -241,6 +244,67 @@ class SplitMeanFlowModule(LightningModuleWrapper):
             )
         else:
             hat_trans_r, hat_rot_r = self.model.forward_flow(
+                trans_t, rot_t, t, r, batch
+            )
+
+            trans_loss = torch.sum(
+                ((hat_trans_r - trans_r) * loss_mask[..., None]) ** 2, dim=(-1, -2)
+            )
+            rot_loss = torch.sum(
+                so3_utils.rot_squared_dist(hat_rot_r, rot_r),
+                dim=-1,
+            )
+
+        # Normalize by the number of residues.
+        trans_loss /= loss_denom
+        rot_loss /= loss_denom
+
+        weighted_trans_loss = trans_loss * self.training_cfg.translation_loss_weight
+        weighted_rot_loss = rot_loss * self.training_cfg.rotation_loss_weight
+        semigroup_loss = weighted_trans_loss + weighted_rot_loss
+        if torch.any(torch.isnan(semigroup_loss)):
+            raise ValueError("NaN loss encountered")
+
+        return {
+            "sg_trans_loss": trans_loss,
+            "sg_rot_loss": rot_loss,
+            "weighted_sg_trans_loss": weighted_trans_loss,
+            "weighted_sg_rot_loss": weighted_rot_loss,
+            "semigroup_loss": semigroup_loss,
+        }
+
+    def semigroup_inference_loss(self, batch, loss_mask):
+        loss_denom = torch.sum(loss_mask, dim=-1) * 3
+
+        # Estimate the xr from the model.
+        trans_t = batch["trans_t"]
+        rot_t = batch["rotmats_t"]
+        t = batch["t"]
+        s = batch["s"]
+        r = batch["r"]
+
+        with torch.no_grad():
+            hat_xs = self.model.inference_forward_flow(trans_t, rot_t, t, s, batch)
+            hat_xr = self.model.inference_forward_flow(*hat_xs, s, r, batch)
+            trans_r, rot_r = hat_xr
+
+        # Calculate the semigroup loss.
+        if self.training_cfg.semigroup_loss_on_velocity:
+            r_minus_t = torch.clamp(r - t, min=1e-4)[..., None]
+            u_trans_tgt = (trans_r - trans_t) / r_minus_t
+            u_rot_tgt = so3_utils.calc_rot_vf(rot_t, rot_r) / r_minus_t
+
+            u_trans, u_rot = self.model.inference_avg_vel(trans_t, rot_t, t, r, batch)
+
+            trans_loss = torch.sum(
+                ((u_trans - u_trans_tgt) * loss_mask[..., None]) ** 2, dim=(-1, -2)
+            )
+
+            rot_loss = torch.sum(
+                ((u_rot - u_rot_tgt) * loss_mask[..., None]) ** 2, dim=(-1, -2)
+            )
+        else:
+            hat_trans_r, hat_rot_r = self.model.inference_forward_flow(
                 trans_t, rot_t, t, r, batch
             )
 
