@@ -11,8 +11,8 @@ model:
     max_num_res: 2000
     timestep_int: 1000
     embed_chain: False
-    time_embedding_type: sinusoidal
-    version: v1
+    time_embedding_type: positional
+    version: v2
   edge_features:
     single_bias_transition_n: 2
     c_s: ${model.node_embed_size}
