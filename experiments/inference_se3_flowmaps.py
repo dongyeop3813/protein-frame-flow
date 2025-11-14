@@ -20,6 +20,7 @@ from models.meanflow_module import MeanFlowModule
 
 
 torch.set_float32_matmul_precision("high")
+torch.set_grad_enabled(False)
 log = eu.get_pylogger(__name__)
 
 

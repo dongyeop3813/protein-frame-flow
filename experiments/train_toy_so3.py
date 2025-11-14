@@ -20,7 +20,7 @@ from pytorch_lightning import (
     LightningModule,
     Trainer,
 )
-from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import ModelCheckpoint, Callback
 from pytorch_lightning.loggers.wandb import WandbLogger
 from pytorch_lightning.utilities import grad_norm
 
@@ -133,8 +133,13 @@ class ToySO3SplitMeanFlowModule(LightningModule):
         x_1 = batch["x1"]
         t = batch["t"]
 
-        # Conditional velocity fields
-        v_t = self.prob_path.cond_vf(t, x_t, x_1)
+        if self._exp_cfg.training.get("use_true_vf", False):
+            # Access dataset to obtain the true velocity field
+            v_t = self.trainer.datamodule.dataset.true_vf(t, x_t)
+        else:
+            # Conditional velocity fields
+            v_t = self.prob_path.cond_vf(t, x_t, x_1)
+
         if torch.any(torch.isnan(v_t)):
             raise ValueError("NaN encountered in v_t")
 
@@ -574,6 +579,32 @@ def visualize_rotation(rotmat: torch.Tensor, mark_start: bool = False):
     return fig
 
 
+from torch_ema import ExponentialMovingAverage
+
+
+class EMACallback(Callback):
+    def __init__(self, decay=0.999):
+        self.decay = decay
+        self.ema = None
+
+    def on_train_start(self, trainer, pl_module):
+        self.ema = ExponentialMovingAverage(
+            pl_module.model.parameters(), decay=self.decay
+        )
+
+    def on_before_zero_grad(self, trainer, pl_module, optimizer):
+        self.ema.update()
+
+    def on_validation_epoch_start(self, trainer, pl_module):
+        if self.ema is not None:
+            self.ema.store()
+            self.ema.copy_to()
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        if self.ema is not None:
+            self.ema.restore()
+
+
 class Experiment:
 
     def __init__(self, *, cfg: DictConfig):
@@ -624,6 +655,10 @@ class Experiment:
 
             # Model checkpoints
             callbacks.append(ModelCheckpoint(**self.exp_cfg.checkpointer))
+
+            # EMA
+            if self.exp_cfg.use_ema:
+                callbacks.append(EMACallback(decay=self.exp_cfg.ema_decay))
 
             # Save config only for main process.
             cfg_path = os.path.join(ckpt_dir, "config.yaml")
