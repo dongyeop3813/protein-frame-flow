@@ -72,7 +72,8 @@ experiment:
   training:
     loss_p: 0.0
     semigroup_loss_on_velocity: True
-    translation_loss_weight: 0.02
+    trans_scale: 0.1
+    translation_loss_weight: 2.0
     rotation_loss_weight: 1.0
     semigroup_loss_weight: 1.0
     flow_matching_loss_weight: 1.0
@@ -80,7 +81,8 @@ experiment:
     use_bb_loss: True
     aux_loss_weight: 0.25
     bb_atom_scale: 0.1
-    t_pass: 0.75
+    t_pass: 0.5
+    t_normalize_clip: 0.1
     inference_sg_loss: False
   wandb:
     name: semiMF_${data.task}_${data.dataset}

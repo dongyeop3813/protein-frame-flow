@@ -131,28 +131,23 @@ class SplitMeanFlowModule(LightningModuleWrapper):
         t = batch["flow_matching_t"]
         loss_denom = torch.sum(loss_mask, dim=-1) * 3
 
-        # Conditional velocity fields
-        # Here, v_rot is a rotation vector.
-        one_minus_t = torch.clamp(1 - t, min=1e-1)[..., None]
-        v_trans = (trans_1 - trans_t) / one_minus_t
-        v_rot = self.interpolant.rots_cond_vf(t, rot_t, rot_1)
-        if torch.any(torch.isnan(v_rot)):
-            raise ValueError("NaN encountered in v_rot")
+        t_clip = self.training_cfg.t_normalize_clip
+        loss_norm_scale = torch.clamp(1 - t, min=t_clip)[..., None]
 
         # Model output predictions
-        u_trans_t, u_rot_t, pred_x1 = self.model.avg_vel(
-            trans_t, rot_t, t, t, batch, return_model_output=True
-        )
+        pred_trans_1, pred_rot_1 = self.model(trans_t, rot_t, t, t, batch)
 
         # Flow matching on translation.
-        trans_loss = torch.sum(
-            ((u_trans_t - v_trans) * loss_mask[..., None]) ** 2, dim=(-1, -2)
+        trans_error = (
+            (trans_1 - pred_trans_1) / loss_norm_scale * self.training_cfg.trans_scale
         )
+        trans_loss = torch.sum(trans_error**2 * loss_mask[..., None], dim=(-1, -2))
 
         # Flow matching on rotation.
-        rot_loss = torch.sum(
-            ((u_rot_t - v_rot) * loss_mask[..., None]) ** 2, dim=(-1, -2)
-        )
+        gt_rots_vf = so3_utils.calc_rot_vf(rot_t, rot_1)
+        pred_rots_vf = so3_utils.calc_rot_vf(rot_t, pred_rot_1)
+        rot_error = (gt_rots_vf - pred_rots_vf) / loss_norm_scale
+        rot_loss = torch.sum(rot_error**2 * loss_mask[..., None], dim=(-1, -2))
 
         # Normalize by the number of residues.
         trans_loss /= loss_denom
@@ -172,7 +167,7 @@ class SplitMeanFlowModule(LightningModuleWrapper):
             "fm_loss": fm_loss,
         }
 
-        return loss_dict, pred_x1
+        return loss_dict, (pred_trans_1, pred_rot_1)
 
     def bb_loss(self, batch, loss_mask, pred_bb_atoms, gt_bb_atoms):
         loss_denom = torch.sum(loss_mask, dim=-1) * 3

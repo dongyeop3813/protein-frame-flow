@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 
-from models.node_feature_net import MeanFlowNodeFeatureNet, MeanFlowNodeFeatureNetv2
+from models.node_feature_net import *
 from models.edge_feature_net import EdgeFeatureNet
 from models import ipa_pytorch
 from data import utils as du
@@ -24,6 +24,8 @@ class MeanFlowModel(nn.Module):
         )
         if model_conf.node_features.get("version", "v1") == "v2":
             self.node_feature_net = MeanFlowNodeFeatureNetv2(model_conf.node_features)
+        elif model_conf.node_features.get("version", "v1") == "v3":
+            self.node_feature_net = MeanFlowNodeFeatureNetv3(model_conf.node_features)
         else:
             self.node_feature_net = MeanFlowNodeFeatureNet(model_conf.node_features)
         self.edge_feature_net = EdgeFeatureNet(model_conf.edge_features)
@@ -143,7 +145,7 @@ class MeanFlowModel(nn.Module):
 
         if self._model_conf.get("cond_vel_parameterization", True):
             # trans_vf = (trans_1 - trans_t) / ((1 - t)[..., None] + 1e-6)
-            trans_vf = (trans_1 - trans_t) / torch.clamp(1 - t, min=1e-1)[..., None]
+            trans_vf = (trans_1 - trans_t) / torch.clamp(1 - t, min=1e-6)[..., None]
             rot_vf = self.interpolant.rots_cond_vf(t, rotmat_t, rotmat_1)
         else:
             trans_vf = trans_1 - trans_t
@@ -164,7 +166,7 @@ class MeanFlowModel(nn.Module):
 
     def inference_avg_vel(self, trans_t, rotmat_t, t, r, feats):
         trans_1, rotmat_1 = self(trans_t, rotmat_t, t, r, feats)
-        trans_vf = (trans_1 - trans_t) / torch.clamp(1 - t, min=1e-1)[..., None]
+        trans_vf = (trans_1 - trans_t) / torch.clamp(1 - t, min=1e-6)[..., None]
         rot_vf = calc_rot_vf(rotmat_t, rotmat_1)
         rot_vf *= self.interpolant._rots_cfg.exp_rate
         return trans_vf, rot_vf
