@@ -1,0 +1,117 @@
+defaults:
+  - datasets
+  - model
+  - _self_
+
+model:
+  node_features:
+    time_embedding_type: fourier
+    version: v3
+
+data:
+
+  # Available tasks: hallucination, inpainting
+  task: hallucination
+
+  # Available tasks: pdb, scope
+  dataset: scope
+
+  loader:
+    num_workers: 4
+    prefetch_factor: 10
+
+  sampler:
+    # Setting for 48GB GPUs
+    max_batch_size: 80
+    max_num_res_squared: 100_000
+
+interpolant:
+  prior_type: uniform
+
+  flow_matching_use_new_t: True
+
+  time_sampler:
+    type: uniform
+    min_t: 1e-2
+
+    three_sample: interval_length_first
+    alpha: 1.0
+    beta: 1.2
+
+  min_t: 1e-2
+
+  twisting:
+    use: False
+
+  rots:
+    corrupt: True
+    sample_schedule: linear
+    exp_rate: 10
+
+  trans:
+    corrupt: True
+    batch_ot: True
+    sample_schedule: linear
+    sample_temp: 1.0
+    vpsde_bmin: 0.1
+    vpsde_bmax: 20.0
+    potential: null
+    potential_t_scaling: False
+    rog:
+      weight: 10.0
+      cutoff: 5.0
+
+  sampling:
+    num_timesteps: 100
+    do_sde: False
+    last_step: True
+
+  self_condition: false
+
+experiment:
+  fine_tune_flow_model: True
+  flow_model_path: flow_map_model.pt
+  debug: False
+  seed: 123
+  num_devices: 2
+  warm_start: null
+  warm_start_cfg_override: True
+  training:
+    loss_p: 0.0
+    semigroup_loss_on_velocity: True
+    trans_scale: 0.1
+    translation_loss_weight: 2.0
+    rotation_loss_weight: 1.0
+    semigroup_loss_weight: 1.0
+    flow_matching_loss_weight: 1.0
+    use_pair_dist_loss: True
+    use_bb_loss: True
+    aux_loss_weight: 0.25
+    bb_atom_scale: 0.1
+    t_pass: 0.5
+    t_normalize_clip: 0.1
+    inference_sg_loss: False
+  wandb:
+    name: semiMF_${data.task}_${data.dataset}
+    project: se3-SemiMF-full
+  optimizer:
+    lr: 0.0001
+  trainer:
+    overfit_batches: 0
+    min_epochs: 1 # prevents early stopping
+    max_epochs: 1000
+    accelerator: gpu
+    log_every_n_steps: 1
+    deterministic: True
+    strategy: ddp
+    check_val_every_n_epoch: 4
+    accumulate_grad_batches: 2
+    gradient_clip_val: 1000.0
+  checkpointer:
+    dirpath: ckpt/${experiment.wandb.project}/${experiment.wandb.name}/${now:%Y-%m-%d}_${now:%H-%M-%S}
+    save_last: True
+    save_top_k: 3
+    monitor: valid_one_step/non_coil_percent
+    mode: max
+  # Keep this null. Will be populated at runtime.
+  inference_dir: null

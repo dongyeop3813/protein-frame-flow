@@ -26,6 +26,8 @@ class SplitMeanFlowModule(LightningModuleWrapper):
 
         # Set-up vector field prediction model
         self.model = MeanFlowModel(cfg.model)
+        if cfg.experiment.get("fine_tune_flow_model"):
+            self.model.load_state_dict(torch.load(cfg.experiment.flow_model_path))
 
         # Set-up interpolant
         self.interpolant = SplitMeanFlowInterpolant(cfg.interpolant)
