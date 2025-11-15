@@ -291,9 +291,8 @@ class SplitMeanFlowModule(LightningModuleWrapper):
 
             u_trans, u_rot = self.model.inference_avg_vel(trans_t, rot_t, t, r, batch)
 
-            trans_loss = torch.sum(
-                ((u_trans - u_trans_tgt) * loss_mask[..., None]) ** 2, dim=(-1, -2)
-            )
+            trans_error = (u_trans - u_trans_tgt) * self.training_cfg.trans_scale
+            trans_loss = torch.sum(trans_error**2 * loss_mask[..., None], dim=(-1, -2))
 
             rot_loss = torch.sum(
                 ((u_rot - u_rot_tgt) * loss_mask[..., None]) ** 2, dim=(-1, -2)
@@ -303,13 +302,9 @@ class SplitMeanFlowModule(LightningModuleWrapper):
                 trans_t, rot_t, t, r, batch
             )
 
-            trans_loss = torch.sum(
-                ((hat_trans_r - trans_r) * loss_mask[..., None]) ** 2, dim=(-1, -2)
-            )
-            rot_loss = torch.sum(
-                so3_utils.rot_squared_dist(hat_rot_r, rot_r),
-                dim=-1,
-            )
+            trans_error = (hat_trans_r - trans_r) * self.training_cfg.trans_scale
+            trans_loss = torch.sum(trans_error**2 * loss_mask[..., None], dim=(-1, -2))
+            rot_loss = torch.sum(so3_utils.rot_squared_dist(hat_rot_r, rot_r), dim=-1)
 
         # Normalize by the number of residues.
         trans_loss /= loss_denom
